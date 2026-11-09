@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Редактор графа УДС</title>
+</head>
+<body>
+  <header id="bar">
+    <strong class="brand">УДС-редактор</strong>
+    <div class="grp">
+      <button id="open" title="Ctrl+O">Открыть</button>
+      <button id="save" title="Ctrl+S">Сохранить .osm</button>
+      <input id="fname" size="10" title="Имя файла = имя команды (team1 → team1.osm)" value="team1" />
+    </div>
+    <div class="grp">
+      <button id="undo" title="Ctrl+Z">↶</button><button id="redo" title="Ctrl+Shift+Z">↷</button>
+    </div>
+    <div class="grp" id="modes">
+      <button data-mode="select" title="V">Выбор</button>
+      <button data-mode="node" title="N">Узел</button>
+      <button data-mode="draw" title="W">Ребро</button>
+      <button data-mode="split" title="X">Разрезать</button>
+      <button data-mode="merge" title="C">Склеить узлы</button>
+      <button data-mode="mark" title="T">Метка</button>
+      <button data-mode="repair" title="U">Участок</button>
+    </div>
+    <div class="grp" id="markbar" hidden>
+      <select id="mtype" title="Что задаём по смыслу"></select>
+      <span id="mval"></span>
+      <label id="mwholel" title="Применить ко всей линии одним кликом"><input id="mwhole" type="checkbox" /> вся линия</label>
+    </div>
+    <div class="grp">
+      <select id="tpl" title="Шаблон для новых рёбер"></select>
+      <select id="cmode" title="Раскраска дорог (K)"><option value="class">Раскраска: класс</option><option value="lanes">Раскраска: полосы</option><option value="surface">Раскраска: покрытие</option><option value="speed">Раскраска: скорость</option></select>
+      <select id="base" title="Подложка"><option value="sat">Спутник</option><option value="osm">OSM</option><option value="custom">Свои тайлы</option><option value="none">Без подложки</option></select>
+      <input id="op" type="range" min="0" max="1" step="0.05" value="0.85" title="Прозрачность подложки" />
+      <input id="tiles" placeholder="https://…/{z}/{x}/{y}.png" size="22" />
+    </div>
+    <div class="grp"><button id="b3d" title="3">3D</button><button id="help" title="?">?</button></div>
+  </header>
+  <main>
+    <div id="mapwrap"><div id="map"></div><div id="legend"></div></div>
+    <aside id="side">
+      <section id="props"></section>
+      <section id="issues"></section>
+    </aside>
+  </main>
+  <footer id="status">Откройте .osm-файл (кнопка «Открыть» или перетащите файл в окно)</footer>
+  <input id="file" type="file" accept=".osm,.xml" hidden />
+  <dialog id="pickDlg"></dialog>
+  <dialog id="helpDlg"><h3>Горячие клавиши</h3><table id="helpTbl"></table><form method="dialog"><button>Закрыть</button></form></dialog>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
