@@ -2,6 +2,7 @@
 import './style.css';
 import { Store } from './core/store.ts';
 import { parseOsm, serializeOsm, onewayDir } from './core/osm.ts';
+import { dist } from './core/geo.ts';
 import type { Issue } from './core/types.ts';
 import { MapView } from './map/mapView.ts';
 import { renderLegend } from './map/legend.ts';
@@ -18,7 +19,7 @@ import { renderProps, renderIssues } from './tools/panel.ts';
 import type { PanelActions } from './tools/panel.ts';
 import { validate, countBy } from './validator/validate.ts';
 
-type Mode = 'select' | 'node' | 'draw' | 'split' | 'merge' | 'mark' | 'repair';
+type Mode = 'select' | 'node' | 'draw' | 'split' | 'merge' | 'mark' | 'repair' | 'ring';
 interface DraftPt { lat: number; lon: number; nodeId?: number; wayId?: number }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -32,6 +33,7 @@ let vTimer: number | undefined;
 let cmode: ColorMode = 'class';
 let markStart: SM.PointRef | null = null;
 let repair: { a?: SM.PointRef; b?: SM.PointRef; mid: { lat: number; lon: number }[] } = { mid: [] };
+let ringConfig = { radius: 18, segments: 16, lanes: 1, speed: 30 };
 
 // ---------- метки «по смыслу» ----------
 type MKey = 'speed' | 'lanes' | 'oneway' | 'surface' | 'stairs' | 'crossing' | 'give_way' | 'stop';
@@ -180,6 +182,67 @@ const actions: PanelActions = {
   },
 };
 
+// ---------- дополнительные инструменты качества графа ----------
+function autoMergeExactDuplicates() {
+  const duplicateIssues = validate(store.doc).filter(i => i.kind === 'duplicate-nodes' && i.nodeIds.length > 1);
+  if (!duplicateIssues.length) return msg('Дубликаты узлов не найдены');
+  const groups = duplicateIssues.map(i => i.nodeIds.filter(id => store.doc.nodes.has(id)));
+  const pairs = groups.flatMap(g => {
+    const keep = g[0];
+    return g.slice(1).filter(id => dist(store.doc.nodes.get(keep)!, store.doc.nodes.get(id)!) < 0.2).map(id => [keep, id] as [number, number]);
+  });
+  const total = pairs.length;
+  if (!total) return msg('Найдены близкие узлы, но ни одна пара не совпадает достаточно точно (< 0,2 м). Объединение не выполнено во избежание искажения геометрии.');
+  if (!confirm(`Найдено ${groups.length} групп дублирующихся узлов. Будет объединено до ${total} узлов. Продолжить?`)) return;
+  const err = store.tryCommit(d => {
+    for (const [keep, remove] of pairs) if (d.nodes.has(keep) && d.nodes.has(remove)) {
+      const e = ops.mergeNodes(d, keep, remove); if (e) return e;
+    }
+    return null;
+  });
+  if (err) return msg(err);
+  runValidation(); msg(`Автоисправление завершено: объединено ${total} пар практически совпадающих узлов. Проверьте результат на карте.`);
+}
+
+function networkStats(): string {
+  const d = store.doc;
+  const roads = [...d.ways.values()].filter(w => ['motorway','motorway_link','trunk','trunk_link','primary','primary_link','secondary','secondary_link','tertiary','tertiary_link','unclassified','residential','living_street','service'].includes(w.tags.highway));
+  const count = (fn: (w: typeof roads[number]) => boolean) => roads.filter(fn).length;
+  const taggedNodes = [...d.nodes.values()];
+  const comps = new Map<number, number>();
+  const parent = new Map<number, number>();
+  const find = (x: number): number => { const p = parent.get(x); if (p === undefined) return x; if (p === x) return x; const r = find(p); parent.set(x, r); return r; };
+  for (const w of roads) for (const id of w.nodes) if (!parent.has(id)) parent.set(id, id);
+  for (const w of roads) for (let i = 0; i < w.nodes.length - 1; i++) { const a=find(w.nodes[i]), b=find(w.nodes[i+1]); if (a!==b) parent.set(a,b); }
+  for (const id of parent.keys()) { const r=find(id); comps.set(r,(comps.get(r)??0)+1); }
+  const largest = Math.max(0, ...comps.values());
+  const used = parent.size;
+  const pct = used ? Math.round(largest / used * 100) : 0;
+  return `Узлы: ${d.nodes.size} · дороги: ${roads.length} · отношения: ${d.relations.size}\n` +
+    `Односторонние: ${count(w => onewayDir(w.tags)!==0)} · мосты: ${count(w => !!w.tags.bridge && w.tags.bridge!=='no')} · тоннели: ${count(w => !!w.tags.tunnel && w.tags.tunnel!=='no')}\n` +
+    `Светофоры: ${taggedNodes.filter(n=>n.tags.highway==='traffic_signals').length} · пешеходные переходы: ${taggedNodes.filter(n=>n.tags.highway==='crossing').length}\n` +
+    `Полосы не заданы: ${count(w => !w.tags.lanes)} · maxspeed не задан: ${count(w => !w.tags.maxspeed)}\n` +
+    `Компонент связности: ${comps.size} · узлов в крупнейшей компоненте: ${pct}%`;
+}
+
+function createRoundabout(lat: number, lon: number) {
+  const { radius, segments, lanes, speed } = ringConfig;
+  const ids: number[] = [];
+  // Локальная метрическая аппроксимация, достаточная для небольших городских перекрёстков.
+  const latScale = 1 / 110574;
+  const lonScale = 1 / (111320 * Math.cos(lat * Math.PI / 180));
+  store.commit(d => {
+    for (let i = 0; i < segments; i++) {
+      const angle = -(2 * Math.PI * i / segments) - Math.PI / 2;
+      ids.push(ops.addNode(d, lat + Math.sin(angle) * radius * latScale, lon + Math.cos(angle) * radius * lonScale));
+    }
+    const wayId = ops.addWay(d, [...ids, ids[0]], { highway: 'residential', junction: 'roundabout', oneway: 'yes', lanes: String(lanes), maxspeed: String(speed) });
+    store.sel = [{ type: 'way', id: wayId }];
+  });
+  setMode('select');
+  msg(`Кольцевой перекрёсток создан: радиус ${radius} м, ${segments} сегментов. Подведите к нему въезды и выезды инструментом «Ребро».`);
+}
+
 // ---------- карта ----------
 const view = new MapView('map', {
   onClick: handleClick,
@@ -226,6 +289,7 @@ function handleClick(e: ClickInfo) {
     }
     case 'mark': handleMark(e); break;
     case 'repair': handleRepair(e); break;
+    case 'ring': createRoundabout(e.lat, e.lng); break;
     case 'merge':
       if (e.nodeId === undefined) return;
       if (pendingMerge === null) { pendingMerge = e.nodeId; msg('Первый узел выбран (он останется). Кликните по второму — он будет склеен с первым'); }
@@ -255,7 +319,7 @@ function setMode(m: Mode) {
   $('markbar').hidden = m !== 'mark'; if (m === 'mark') buildMarkControl();
   document.querySelectorAll<HTMLButtonElement>('#modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   view.setCursor(m === 'select' ? '' : 'crosshair'); redraw();
-  msg({ select: 'Выбор: клик по ребру/узлу, перетаскивание узлов выбранного ребра', node: 'Узел: клик по карте или по ребру (вставка узла-перекрёстка)', draw: 'Ребро: кликайте точки, клик по узлу/ребру присоединяет к сети', split: 'Разрезать: клик по узлу или точке на ребре', merge: 'Склейка: выберите два узла подряд', mark: curType().hint, repair: 'Участок: кликните начало и конец на линии, затем новую форму, Enter' }[m]);
+  msg({ select: 'Выбор: клик по ребру/узлу, перетаскивание узлов выбранного ребра', node: 'Узел: клик по карте или по ребру (вставка узла-перекрёстка)', draw: 'Ребро: кликайте точки, клик по узлу/ребру присоединяет к сети', split: 'Разрезать: клик по узлу или точке на ребре', merge: 'Склейка: выберите два узла подряд', mark: curType().hint, repair: 'Участок: кликните начало и конец на линии, затем новую форму, Enter', ring: 'Кликните по карте, чтобы создать кольцевой перекрёсток' }[m]);
 }
 
 // ---------- валидация и перерисовка ----------
@@ -286,7 +350,12 @@ function save() {
   issues = validate(store.doc); redraw();
   const c = countBy(issues);
   const conn = issues.find(i => i.kind === 'connectivity')?.msg ?? '';
-  if (c.error && !confirm(`Перед сохранением найдено критичных ошибок: ${c.error} (предупреждений: ${c.warn}).\n${conn}\n\nСохранить всё равно?`)) { actions.focusIssue(issues.find(i => i.severity === 'error')!); return; }
+  if (c.error) {
+    alert(`Сохранение заблокировано: найдено критичных ошибок — ${c.error}.\n${conn}\nИсправьте ошибки и повторите экспорт.`);
+    const first = issues.find(i => i.severity === 'error'); if (first) actions.focusIssue(first);
+    return;
+  }
+  if (c.warn && !confirm(`Найдены предупреждения: ${c.warn}. Они не блокируют экспорт, но могут повлиять на симуляцию.\n${conn}\n\nСохранить файл всё равно?`)) return;
   const name = ($<HTMLInputElement>('fname').value.trim() || 'team1').replace(/[^\w.-]/g, '_').replace(/\.osm$/i, '');
   localStorage.setItem('fname', name);
   const out = structuredClone(store.doc);
@@ -316,6 +385,15 @@ $<HTMLInputElement>('fname').value = localStorage.getItem('fname') ?? 'team1';
 $('open').onclick = () => $('file').click();
 $<HTMLInputElement>('file').onchange = e => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) openFile(f); (e.target as HTMLInputElement).value = ''; };
 $('save').onclick = save;
+$('ring').onclick = () => {
+  const r = Number(prompt('Радиус кольца, м', String(ringConfig.radius))); if (!Number.isFinite(r) || r < 5 || r > 100) return msg('Радиус должен быть от 5 до 100 м');
+  const n = Number(prompt('Количество сегментов (8–48)', String(ringConfig.segments))); if (!Number.isInteger(n) || n < 8 || n > 48) return msg('Количество сегментов должно быть от 8 до 48');
+  const l = Number(prompt('Количество полос', String(ringConfig.lanes))); if (!Number.isInteger(l) || l < 1 || l > 6) return msg('Количество полос должно быть от 1 до 6');
+  const v = Number(prompt('Ограничение скорости, км/ч', String(ringConfig.speed))); if (!Number.isFinite(v) || v < 5 || v > 130) return msg('Скорость должна быть от 5 до 130 км/ч');
+  ringConfig = { radius: r, segments: n, lanes: l, speed: v }; setMode('ring');
+};
+$('autofix').onclick = autoMergeExactDuplicates;
+$('stats').onclick = () => alert('Статистика дорожной сети\n\n' + networkStats());
 $('undo').onclick = () => store.undo(); $('redo').onclick = () => store.redo();
 document.querySelectorAll<HTMLButtonElement>('#modes button').forEach(b => (b.onclick = () => setMode(b.dataset.mode as Mode)));
 $<HTMLSelectElement>('base').onchange = e => view.setBase((e.target as HTMLSelectElement).value as Base);
