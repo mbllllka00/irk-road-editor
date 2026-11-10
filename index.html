@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
   <title>Редактор графа УДС</title>
 </head>
 <body>
@@ -11,13 +12,17 @@
     <div class="grp">
       <button id="open" title="Ctrl+O">Открыть</button>
       <button id="save" title="Ctrl+S">Сохранить .osm</button>
-      <button id="ring" title="Создать геометрию кольцевого перекрёстка">+ Кольцо</button>
+      <button id="ring" title="Нарисовать кольцо: тянуть рамку как эллипс в Paint (Shift — круг)">+ Кольцо</button>
       <button id="autofix" title="Объединить узлы с одинаковыми координатами">Автоисправить дубликаты</button>
       <button id="stats" title="Статистика дорожной сети">Статистика</button>
+      <button id="compare" title="Сравнить текущую карту с исходным открытым OSM" disabled>Сравнить с исходным</button>
       <input id="fname" size="10" title="Имя файла = имя команды (team1 → team1.osm)" value="team1" />
     </div>
     <div class="grp">
       <button id="undo" title="Ctrl+Z">↶</button><button id="redo" title="Ctrl+Shift+Z">↷</button>
+    </div>
+    <div class="grp" title="Поиск улицы по названию: выделит все её рёбра (клавиша /)">
+      <input id="search" list="streetList" placeholder="Поиск улицы…" size="18" /><datalist id="streetList"></datalist><button id="searchBtn">Найти</button>
     </div>
     <div class="grp" id="modes">
       <button data-mode="select" title="V">Выбор</button>
@@ -27,6 +32,14 @@
       <button data-mode="merge" title="C">Склеить узлы</button>
       <button data-mode="mark" title="T">Метка</button>
       <button data-mode="repair" title="U">Участок</button>
+    </div>
+    <div class="grp"><button id="multi" title="Мульти-выделение: каждый клик добавляет объект. Также: Shift/Ctrl+клик, Shift+рамка">☑ Мульти</button></div>
+    <div class="grp" id="ringbar" hidden>
+      <label title="Сегментов в кольце">сегм. <input id="ringN" type="number" min="8" max="48" value="24" style="width:52px" /></label>
+      <label>полос <input id="ringL" type="number" min="1" max="6" value="1" style="width:44px" /></label>
+      <label>км/ч <input id="ringV" type="number" min="5" max="130" value="30" style="width:52px" /></label>
+      <label title="Радиус для простого клика без перетаскивания">R, м <input id="ringR" type="number" min="5" max="100" value="18" style="width:52px" /></label>
+      <label title="Без Shift кольцо — эллипс, как в Paint"><input id="ringCircle" type="checkbox" /> всегда круг</label>
     </div>
     <div class="grp" id="markbar" hidden>
       <select id="mtype" title="Что задаём по смыслу"></select>
@@ -43,7 +56,18 @@
     <div class="grp"><button id="b3d" title="3">3D</button><button id="help" title="?">?</button></div>
   </header>
   <main>
-    <div id="mapwrap"><div id="map"></div><div id="legend"></div></div>
+    <div id="mapwrap"><div id="map"></div><button id="legtoggle" title="G">✕ Скрыть легенду</button><div id="legend"></div>
+      <div id="comparePanel" hidden>
+        <strong>Сравнение с исходным</strong>
+        <div id="compareFile" class="muted"></div>
+        <div class="cmp-row"><i class="cmp-swatch cmp-unchanged"></i>Без изменений — серый</div>
+        <div class="cmp-row"><i class="cmp-swatch cmp-added"></i>Добавлено — зелёный</div>
+        <div class="cmp-row"><i class="cmp-swatch cmp-removed"></i>Удалено — красный</div>
+        <div class="cmp-row"><i class="cmp-swatch cmp-modified"></i>Отредактировано — синий</div>
+        <p class="cmp-note">Удалённые рёбра показаны пунктиром там, где они были в исходном файле.</p>
+        <div id="compareCounts" class="cmp-counts"></div>
+        <div class="cmp-actions"><button id="compareDetails">Подробный отчёт</button><button id="compareClose">Закрыть сравнение</button></div>
+      </div></div>
     <aside id="side">
       <section id="props"></section>
       <section id="issues"></section>
@@ -52,6 +76,8 @@
   <footer id="status">Откройте .osm-файл (кнопка «Открыть» или перетащите файл в окно)</footer>
   <input id="file" type="file" accept=".osm,.xml" hidden />
   <dialog id="pickDlg"></dialog>
+  <dialog id="statsDlg"><h3>Статистика сети</h3><pre id="statsText"></pre><form method="dialog" class="dlgbtns"><button type="button" id="statsTxt">Сохранить .txt</button><button type="button" id="statsCsv">Сохранить .csv</button><button type="button" id="statsJson">Сохранить .json</button><button>Закрыть</button></form></dialog>
+  <dialog id="diffDlg"><h3>Изменения относительно исходного файла</h3><p id="diffName" class="muted"></p><div id="diffSummary"></div><div id="diffList"></div><form method="dialog" class="dlgbtns"><button type="button" id="diffJson">Скачать отчёт .json</button><button>Закрыть</button></form></dialog>
   <dialog id="helpDlg"><h3>Горячие клавиши</h3><table id="helpTbl"></table><form method="dialog"><button>Закрыть</button></form></dialog>
   <script type="module" src="/src/main.ts"></script>
 </body>

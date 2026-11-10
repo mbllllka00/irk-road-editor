@@ -206,22 +206,38 @@ export function mergeNodes(doc: Doc, keepId: number, removeId: number): string |
 
 // ---------- копирование атрибутов и шаблоны ----------
 export const COPY_KEYS = ['highway', 'oneway', 'lanes', 'lanes:forward', 'lanes:backward', 'turn:lanes', 'turn:lanes:forward',
-  'turn:lanes:backward', 'maxspeed', 'surface', 'width', 'sidewalk', 'cycleway', 'junction'];
+  'turn:lanes:backward', 'maxspeed', 'maxspeed:forward', 'maxspeed:backward', 'surface', 'width', 'sidewalk', 'cycleway', 'junction', 'service', 'lane_markings'];
 
-export function copyTags(doc: Doc, srcId: number, dstIds: number[], keys: string[] = COPY_KEYS) {
-  const s = doc.ways.get(srcId); if (!s) return;
+export function copyTags(doc: Doc, srcId: number, dstIds: number[], keys: string[] = COPY_KEYS): number {
+  const snap = snapshotTags(doc, srcId, keys); if (!snap) return 0;
+  return pasteTags(doc, dstIds.filter(id => id !== srcId), snap);
+}
+
+/** Снимок характеристик ребра для «вставки» позже (не зависит от последующих правок источника). */
+export function snapshotTags(doc: Doc, srcId: number, keys: string[] = COPY_KEYS): Tags | null {
+  const s = doc.ways.get(srcId); if (!s) return null;
+  const out: Tags = {}; for (const k of keys) out[k] = s.tags[k] ?? ''; return out;
+}
+/** Записать снимок в рёбра; пустое значение удаляет тег. Возвращает число изменённых рёбер. */
+export function pasteTags(doc: Doc, dstIds: number[], snap: Tags): number {
+  let n = 0;
   for (const id of dstIds) {
-    const d = doc.ways.get(id); if (!d || d === s) continue;
-    for (const k of keys) setTag(d, k, s.tags[k] ?? '');
+    const d = doc.ways.get(id); if (!d) continue;
+    let ch = false;
+    for (const [k, v] of Object.entries(snap)) if ((d.tags[k] ?? '') !== v) { setTag(d, k, v); ch = true; }
+    if (ch) n++;
   }
+  return n;
 }
 
 /** Шаблоны: пустая строка = удалить тег. */
 export const TEMPLATES: Record<string, Tags> = {
-  'Улица: 2 полосы, двустороннее': { highway: 'residential', lanes: '2', oneway: '', maxspeed: '40', 'lanes:forward': '', 'lanes:backward': '' },
-  'Магистраль: 4 полосы (2+2)': { highway: 'primary', lanes: '4', oneway: '', maxspeed: '60', 'lanes:forward': '2', 'lanes:backward': '2' },
-  'Односторонняя: 2 полосы': { highway: 'secondary', lanes: '2', oneway: 'yes', maxspeed: '60', 'lanes:forward': '', 'lanes:backward': '' },
-  'Односторонняя: 1 полоса (двор)': { highway: 'service', lanes: '1', oneway: 'yes', maxspeed: '20', 'lanes:forward': '', 'lanes:backward': '' },
+  'Улица: 2 полосы, двустороннее': { highway: 'residential', service: '', lanes: '2', oneway: '', maxspeed: '40', 'lanes:forward': '', 'lanes:backward': '' },
+  'Магистраль: 4 полосы (2+2)': { highway: 'primary', service: '', lanes: '4', oneway: '', maxspeed: '60', 'lanes:forward': '2', 'lanes:backward': '2' },
+  'Односторонняя: 2 полосы': { highway: 'secondary', service: '', lanes: '2', oneway: 'yes', maxspeed: '60', 'lanes:forward': '', 'lanes:backward': '' },
+  'Односторонняя: 1 полоса (двор)': { highway: 'service', service: '', lanes: '1', oneway: 'yes', maxspeed: '20', 'lanes:forward': '', 'lanes:backward': '' },
+  'Парковка: проезд между местами': { highway: 'service', service: 'parking_aisle', lanes: '', oneway: '', maxspeed: '10', 'lanes:forward': '', 'lanes:backward': '' },
+  'Подземный пешеходный переход': { highway: 'footway', tunnel: 'yes', layer: '-1', lanes: '', oneway: '', maxspeed: '', 'lanes:forward': '', 'lanes:backward': '' },
   'Кольцо': { highway: 'residential', junction: 'roundabout', oneway: 'yes', lanes: '1', maxspeed: '30' },
 };
 export function applyTemplate(doc: Doc, wayIds: number[], name: string) {

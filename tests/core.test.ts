@@ -63,10 +63,16 @@ test('сериализация: version+1 и отрицательные id', () 
   assert.match(xml, /<tag k="lanes" v="2"\/>/);
 });
 
-import { categorize, speedKmh, surfaceCat, lineWidth } from '../src/core/roadStyle.ts';
+import { categorize, speedKmh, surfaceCat, lineWidth, recommendLink, CLASS_CATS } from '../src/core/roadStyle.ts';
 test('раскраска: класс, пешеходные с пунктиром', () => {
-  assert.equal(categorize('class', { highway: 'primary' }).key, 'main');
-  assert.equal(categorize('class', { highway: 'primary' }).color, '#ffd21f');
+  assert.equal(categorize('class', { highway: 'primary' }).key, 'primary');
+  assert.equal(categorize('class', { highway: 'primary' }).color, '#facc15');
+  assert.notEqual(categorize('class', { highway: 'primary_link' }).color, categorize('class', { highway: 'primary' }).color);
+  assert.equal(categorize('class', { highway: 'trunk' }).key, 'trunk');
+  assert.equal(recommendLink(['primary', 'residential']), 'primary_link');
+  assert.equal(recommendLink(['residential', 'service']), 'tertiary_link');
+  assert.equal(recommendLink([]), null);
+  assert.equal(new Set(CLASS_CATS.map(c => c.color)).size, CLASS_CATS.length);
   assert.equal(categorize('class', { highway: 'footway' }).dash, true);
   assert.equal(categorize('class', { highway: 'residential' }).dash, false);
   assert.equal(categorize('class', { railway: 'tram' }).key, 'tram');
@@ -98,4 +104,60 @@ test('ширина линии зависит от полос', () => {
 test('валидатор: maxspeed вне диапазона', () => {
   const d = grid(); d.ways.get(10)!.tags.maxspeed = '300';
   assert.ok(validate(d).some(i => i.kind === 'maxspeed-range'));
+});
+
+import { snapshotTags, pasteTags, copyTags, TEMPLATES, templateTags, addNode, addWay } from '../src/tools/ops.ts';
+test('парковочный проезд: своя категория и шаблон', () => {
+  assert.equal(categorize('class', { highway: 'service', service: 'parking_aisle' }).key, 'parking');
+  assert.equal(categorize('class', { highway: 'service' }).key, 'service');
+  assert.equal(templateTags('Парковка: проезд между местами').service, 'parking_aisle');
+  assert.equal(TEMPLATES['Улица: 2 полосы, двустороннее'].service, '');
+});
+test('копирование характеристик: снимок, вставка, удаление отсутствующих тегов', () => {
+  const d = newDoc(); const a = addNode(d, 0, 0), b = addNode(d, 0, 0.001), c = addNode(d, 0, 0.002);
+  const w1 = addWay(d, [a, b], { highway: 'service', service: 'parking_aisle', maxspeed: '10', name: 'A' });
+  const w2 = addWay(d, [b, c], { highway: 'primary', lanes: '4', maxspeed: '60', name: 'B' });
+  const snap = snapshotTags(d, w1)!;
+  d.ways.get(w1)!.tags.maxspeed = '99'; // правка источника после копирования не влияет на снимок
+  assert.equal(pasteTags(d, [w2], snap), 1);
+  const t = d.ways.get(w2)!.tags;
+  assert.equal(t.highway, 'service'); assert.equal(t.service, 'parking_aisle'); assert.equal(t.maxspeed, '10');
+  assert.equal(t.lanes, undefined); assert.equal(t.name, 'B'); // lanes удалён, name не копируется
+  assert.equal(pasteTags(d, [w2], snap), 0); // повтор ничего не меняет
+  assert.equal(copyTags(d, w1, [w1, w2]), 1); // источник пропускается, w2 получает уже изменённый maxspeed=99
+});
+
+import { ellipsePoints, shapeFromCorners } from '../src/core/geo.ts';
+import { normalizePeak } from '../src/core/peak.ts';
+test('кольцо: эллипс против часовой стрелки, рамка как в Paint', () => {
+  const p = ellipsePoints(52, 104, 20, 10, 16);
+  assert.equal(p.length, 16);
+  assert.ok(p[0].lat > 52 && Math.abs(p[0].lon - 104) < 1e-9); // старт на севере
+  assert.ok(p[4].lon < 104);                                      // дальше на запад: против часовой
+  const s = shapeFromCorners({ lat: 52, lon: 104 }, { lat: 52.0002, lon: 104.0006 }, false);
+  assert.ok(s.rx > s.ry);
+  const c = shapeFromCorners({ lat: 52, lon: 104 }, { lat: 52.0002, lon: 104.0006 }, true);
+  assert.ok(Math.abs(c.rx - c.ry) < 1e-6);
+});
+test('время пика: нормализация и ошибки', () => {
+  assert.equal(normalizePeak('7-9'), '07:00-09:00');
+  assert.equal(normalizePeak('7:30–9:30, 17-19'), '07:30-09:30;17:00-19:00');
+  assert.equal(normalizePeak('25-26'), null);
+  assert.equal(normalizePeak('abc'), null);
+  assert.equal(normalizePeak('08:00-08:00'), null);
+});
+
+import { isUnderpass, hwKey, PSEUDO_CLASSES } from '../src/core/roadStyle.ts';
+test('подземный пешеходный переход: отличается от тротуара', () => {
+  const ug = { highway: 'footway', tunnel: 'yes', layer: '-1' };
+  assert.equal(isUnderpass(ug), true);
+  assert.equal(isUnderpass({ highway: 'footway' }), false);
+  assert.equal(isUnderpass({ highway: 'footway', tunnel: 'building_passage' }), false);
+  assert.equal(isUnderpass({ highway: 'primary', tunnel: 'yes' }), false); // дорожный тоннель — не подземка
+  assert.equal(categorize('class', ug).key, 'underpass');
+  assert.equal(categorize('class', ug).dash, true);
+  assert.equal(categorize('lanes', ug).key, 'underpass');
+  assert.equal(categorize('class', { highway: 'footway' }).key, 'footway');
+  assert.equal(hwKey(ug), 'footway:underpass');
+  assert.deepEqual(PSEUDO_CLASSES['footway:underpass'].clear, ['tunnel', 'layer']);
 });

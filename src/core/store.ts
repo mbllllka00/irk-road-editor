@@ -7,8 +7,13 @@ const LIMIT = 60;
 
 export class Store {
   doc: Doc = newDoc();
+  /** Неизменный снимок файла при открытии; не сбрасывается при экспорте и undo/redo. */
+  original: Doc | null = null;
+  originalName = '';
   sel: Sel[] = [];
   dirty = false;
+  /** Версия содержимого (не выделения): нужна для обновления сравнения только после правок. */
+  revision = 0;
   dragging = false; // во время перетаскивания тяжёлые вычисления панели пропускаются
   private undoStack: Doc[] = [];
   private redoStack: Doc[] = [];
@@ -17,15 +22,16 @@ export class Store {
   onChange(fn: Listener) { this.listeners.add(fn); }
   notify() { this.listeners.forEach(fn => fn()); }
 
-  load(doc: Doc) {
-    this.doc = doc; this.sel = []; this.undoStack = []; this.redoStack = []; this.dirty = false;
+  load(doc: Doc, name = '') {
+    this.original = structuredClone(doc); this.originalName = name;
+    this.doc = doc; this.sel = []; this.undoStack = []; this.redoStack = []; this.dirty = false; this.revision++;
     this.notify();
   }
   /** Сохранить снимок ДО изменения (для drag: вызвать один раз в начале). */
   checkpoint() {
     this.undoStack.push(structuredClone(this.doc));
     if (this.undoStack.length > LIMIT) this.undoStack.shift();
-    this.redoStack = []; this.dirty = true;
+    this.redoStack = []; this.dirty = true; this.revision++;
   }
   /** Одна атомарная правка = один шаг undo. */
   commit(fn: (d: Doc) => void) {
@@ -41,17 +47,17 @@ export class Store {
     if (err) { this.doc = snap; return err; }
     this.undoStack.push(snap);
     if (this.undoStack.length > LIMIT) this.undoStack.shift();
-    this.redoStack = []; this.dirty = true;
+    this.redoStack = []; this.dirty = true; this.revision++;
     this.pruneSelection(); this.notify();
     return null;
   }
   undo() {
     const prev = this.undoStack.pop(); if (!prev) return;
-    this.redoStack.push(structuredClone(this.doc)); this.doc = prev; this.pruneSelection(); this.notify();
+    this.redoStack.push(structuredClone(this.doc)); this.doc = prev; this.revision++; this.pruneSelection(); this.notify();
   }
   redo() {
     const next = this.redoStack.pop(); if (!next) return;
-    this.undoStack.push(structuredClone(this.doc)); this.doc = next; this.pruneSelection(); this.notify();
+    this.undoStack.push(structuredClone(this.doc)); this.doc = next; this.revision++; this.pruneSelection(); this.notify();
   }
   canUndo() { return this.undoStack.length > 0; }
   canRedo() { return this.redoStack.length > 0; }

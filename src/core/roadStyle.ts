@@ -14,42 +14,89 @@ export const MODE_TITLES: Record<ColorMode, string> = {
 const PED = new Set(['footway', 'path', 'pedestrian', 'steps', 'cycleway', 'bridleway']);
 export const isPed = (t: Tags) => !!t.highway && PED.has(t.highway);
 export const isTram = (t: Tags) => !t.highway && t.railway === 'tram';
+/** Подземный пешеходный переход (подземка): пешеходная линия в тоннеле. */
+export const isUnderpass = (t: Tags) => isPed(t) && !!t.tunnel && t.tunnel !== 'no' && t.tunnel !== 'building_passage';
 export const isDrawn = (t: Tags) => !!t.highway || t.railway === 'tram';
 
-export const CLASS_CATS: Cat[] = [
-  { key: 'main', label: 'Главные (motorway, trunk, primary)', color: '#ffd21f' },
-  { key: 'secondary', label: 'Второстепенные (secondary)', color: '#ff9f1c' },
-  { key: 'local', label: 'Местные (tertiary, unclassified)', color: '#ffffff' },
-  { key: 'residential', label: 'Жилые улицы, дворы', color: '#b8c4cc' },
-  { key: 'service', label: 'Служебные проезды (service)', color: '#7d848a' },
-  { key: 'ped', label: 'Пешеходные, велодорожки (пунктир)', color: '#a58bff' },
-  { key: 'steps', label: 'Лестницы (пунктир)', color: '#ff5cc8' },
-  { key: 'tram', label: 'Трамвай (пунктир)', color: '#d0d0d0' },
-  { key: 'other', label: 'Прочее (track и др.)', color: '#c49a6c' },
+export interface ClassCat extends Cat { dash: boolean; hw: string }
+const C = (hw: string, label: string, color: string, dash = false): ClassCat => ({ key: hw, hw, label, color, dash });
+/** Каждый вид дороги: свой цвет. Съезды (_link) — светлый оттенок цвета «родительского» класса. Ключ категории = значение highway. */
+export const CLASS_CATS: ClassCat[] = [
+  C('motorway', 'Автомагистраль (motorway)', '#e11d48'),
+  C('motorway_link', 'Съезд motorway', '#fb7185'),
+  C('trunk', 'Скоростная (trunk)', '#f97316'),
+  C('trunk_link', 'Съезд trunk', '#fdba74'),
+  C('primary', 'Главная (primary)', '#facc15'),
+  C('primary_link', 'Съезд primary', '#fef08a'),
+  C('secondary', 'Второстепенная (secondary)', '#a3e635'),
+  C('secondary_link', 'Съезд secondary', '#d9f99d'),
+  C('tertiary', 'Местная (tertiary)', '#10b981'),
+  C('tertiary_link', 'Съезд tertiary', '#6ee7b7'),
+  C('unclassified', 'Прочая (unclassified)', '#e5e7eb'),
+  C('residential', 'Жилая улица (residential)', '#38bdf8'),
+  C('living_street', 'Двор, жилая зона (living_street)', '#6366f1'),
+  C('service', 'Служебный проезд (service)', '#94a3b8'),
+  C('parking', 'Парковка: проезды (service=parking_aisle)', '#a21caf'),
+  C('track', 'Грунтовая дорога (track)', '#a16207'),
+  C('underpass', 'Подземный пеш. переход (tunnel, пунктир)', '#8b5cf6', true),
+  C('pedestrian', 'Пешеходная улица (пунктир)', '#f0abfc', true),
+  C('footway', 'Тротуар, дорожка (footway, пунктир)', '#ec4899', true),
+  C('path', 'Тропа (path, пунктир)', '#c4b5fd', true),
+  C('cycleway', 'Велодорожка (cycleway, пунктир)', '#2dd4bf', true),
+  C('bridleway', 'Конная тропа (bridleway, пунктир)', '#d6a77a', true),
+  C('steps', 'Лестница (steps, пунктир)', '#f59e0b', true),
+  C('tram', 'Трамвай (пунктир)', '#d0d0d0', true),
+  C('other', 'Прочее (construction и др.)', '#c49a6c'),
 ];
 const classCat = (key: string) => CLASS_CATS.find(c => c.key === key)!;
 export function classKey(t: Tags): string {
   if (isTram(t)) return 'tram';
   const h = t.highway ?? '';
-  if (/^(motorway|trunk|primary)(_link)?$/.test(h)) return 'main';
-  if (/^secondary(_link)?$/.test(h)) return 'secondary';
-  if (/^tertiary(_link)?$|^unclassified$/.test(h)) return 'local';
-  if (h === 'residential' || h === 'living_street') return 'residential';
-  if (h === 'service') return 'service';
-  if (h === 'steps') return 'steps';
-  if (PED.has(h)) return 'ped';
-  return 'other';
+  if (isUnderpass(t)) return 'underpass';
+  if (h === 'service' && t.service === 'parking_aisle') return 'parking';
+  return CLASS_CATS.some(c => c.key === h && h !== 'other' && h !== 'tram' && h !== 'parking' && h !== 'underpass') ? h : 'other';
 }
-export const HIGHWAY_CLASSES: { value: string; label: string }[] = [
-  { value: 'motorway', label: 'Автомагистраль (motorway)' }, { value: 'trunk', label: 'Скоростная (trunk)' },
-  { value: 'primary', label: 'Главная (primary)' }, { value: 'secondary', label: 'Второстепенная (secondary)' },
-  { value: 'tertiary', label: 'Местная (tertiary)' }, { value: 'unclassified', label: 'Прочая (unclassified)' },
-  { value: 'residential', label: 'Жилая улица (residential)' }, { value: 'living_street', label: 'Двор, жилая зона (living_street)' },
-  { value: 'service', label: 'Служебный проезд (service)' },
-  { value: 'motorway_link', label: 'Съезд motorway' }, { value: 'trunk_link', label: 'Съезд trunk' },
-  { value: 'primary_link', label: 'Съезд primary' }, { value: 'secondary_link', label: 'Съезд secondary' }, { value: 'tertiary_link', label: 'Съезд tertiary' },
-  { value: 'pedestrian', label: 'Пешеходная улица' }, { value: 'footway', label: 'Пешеходная дорожка (footway)' },
-  { value: 'path', label: 'Тропа (path)' }, { value: 'cycleway', label: 'Велодорожка (cycleway)' }, { value: 'steps', label: 'Лестница (steps)' },
+
+/** Пять видов съездов: чем отличаются и когда какой ставить. */
+export interface LinkInfo { value: string; parent: string; short: string; when: string }
+export const LINK_INFO: LinkInfo[] = [
+  { value: 'motorway_link', parent: 'motorway', short: 'Съезд автомагистрали', when: 'Въезд на автомагистраль и выезд с неё (развязки, где нет светофоров и пересечений в одном уровне). Односторонний.' },
+  { value: 'trunk_link', parent: 'trunk', short: 'Съезд скоростной дороги', when: 'Рампа, соединяющая скоростную дорогу (trunk) с другими дорогами: путепроводные развязки, въезды на мост.' },
+  { value: 'primary_link', parent: 'primary', short: 'Съезд главной дороги', when: 'Поворотный «рукав» или рампа главной улицы: отдельная полоса правого поворота, съезд с путепровода на городскую улицу.' },
+  { value: 'secondary_link', parent: 'secondary', short: 'Съезд второстепенной', when: 'То же для второстепенных улиц: короткие повороты, отделённые островком, выезды с развязок меньшего масштаба.' },
+  { value: 'tertiary_link', parent: 'tertiary', short: 'Съезд местной дороги', when: 'Мелкие соединительные участки у местных дорог: канализированные повороты, примыкания.' },
+];
+export const LINK_RULE = 'Класс съезда = класс более высокой из двух дорог, которые он соединяет (например, съезд с primary на residential — primary_link). Это влияет на приоритет в симуляторах и на то, как редактор раскрашивает карту. Рёбра *_link — всегда короткие соединительные участки; если участок длинный и это обычная улица, ставьте её собственный класс.';
+const RANK_ORDER = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service'];
+/** Какого вида должен быть съезд, соединяющий дороги с данными highway. null — не из чего вывести. */
+export function recommendLink(connected: string[]): string | null {
+  let best = RANK_ORDER.length;
+  for (const h of connected) { const i = RANK_ORDER.indexOf(h.replace(/_link$/, '')); if (i >= 0 && i < best) best = i; }
+  // съезды бывают только до tertiary включительно: для unclassified и ниже берём tertiary_link
+  if (best >= RANK_ORDER.length) return null;
+  return RANK_ORDER[Math.min(best, 4)] + '_link';
+}
+/** Пункты списка класса, которые задаются набором тегов, а не одним highway. */
+export const PSEUDO_CLASSES: Record<string, { set: Tags; clear: string[]; cat: string }> = {
+  'service:parking_aisle': { set: { highway: 'service', service: 'parking_aisle' }, clear: ['service'], cat: 'parking' },
+  'footway:underpass': { set: { highway: 'footway', tunnel: 'yes', layer: '-1' }, clear: ['tunnel', 'layer'], cat: 'underpass' },
+};
+export function hwKey(t: Tags): string {
+  if (t.highway === 'footway' && isUnderpass(t)) return 'footway:underpass';
+  if (t.highway === 'service' && t.service === 'parking_aisle') return 'service:parking_aisle';
+  return t.highway ?? '';
+}
+export const HIGHWAY_CLASSES: { value: string; label: string; group: string }[] = [
+  { value: 'motorway', label: 'Автомагистраль (motorway)', group: 'Основные дороги' }, { value: 'trunk', label: 'Скоростная (trunk)', group: 'Основные дороги' },
+  { value: 'primary', label: 'Главная (primary)', group: 'Основные дороги' }, { value: 'secondary', label: 'Второстепенная (secondary)', group: 'Основные дороги' },
+  { value: 'tertiary', label: 'Местная (tertiary)', group: 'Основные дороги' }, { value: 'unclassified', label: 'Прочая (unclassified)', group: 'Основные дороги' },
+  { value: 'residential', label: 'Жилая улица (residential)', group: 'Улицы и проезды' }, { value: 'living_street', label: 'Двор, жилая зона (living_street)', group: 'Улицы и проезды' },
+  { value: 'service', label: 'Служебный проезд (service)', group: 'Улицы и проезды' }, { value: 'service:parking_aisle', label: 'Парковка: проезд между местами (service=parking_aisle)', group: 'Улицы и проезды' },
+  { value: 'track', label: 'Грунтовая дорога (track)', group: 'Улицы и проезды' },
+  ...LINK_INFO.map(l => ({ value: l.value, label: `${l.short} (${l.value})`, group: 'Съезды / рампы (*_link)' })),
+  { value: 'footway:underpass', label: 'Подземный пешеходный переход (подземка)', group: 'Пешеходные' },
+  { value: 'pedestrian', label: 'Пешеходная улица', group: 'Пешеходные' }, { value: 'footway', label: 'Пешеходная дорожка (footway)', group: 'Пешеходные' },
+  { value: 'path', label: 'Тропа (path)', group: 'Пешеходные' }, { value: 'cycleway', label: 'Велодорожка (cycleway)', group: 'Пешеходные' }, { value: 'steps', label: 'Лестница (steps)', group: 'Пешеходные' },
 ];
 
 // ---------- полосы ----------
@@ -118,7 +165,7 @@ export function categorize(mode: ColorMode, t: Tags): RoadCat {
 }
 /** Все категории режима в порядке показа в легенде. */
 export function catalog(mode: ColorMode): Cat[] {
-  const ped = [classCat('ped'), classCat('steps'), classCat('tram')];
+  const ped = CLASS_CATS.filter(c => c.dash);
   if (mode === 'class') return CLASS_CATS;
   if (mode === 'lanes') return [...LANE_CATS, ...ped];
   if (mode === 'surface') return [...SURFACES.map(s => ({ key: s.value, label: s.label, color: s.color })), SURF_OTHER, SURF_NONE, classCat('tram')];

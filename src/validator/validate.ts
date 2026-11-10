@@ -1,5 +1,6 @@
 // [P4] Валидатор графа УДС: чистая функция validate(doc) → Issue[].
 import type { Doc, Issue, OsmWay } from '../core/types.ts';
+import { PEAK_TAG, normalizePeak } from '../core/peak.ts';
 import { isRoad, onewayDir } from '../core/osm.ts';
 import { segIntersect } from '../core/geo.ts';
 import { speedKmh } from '../core/roadStyle.ts';
@@ -56,6 +57,9 @@ export function validate(doc: Doc): Issue[] {
     if (t.maxspeed && !/^\d+( ?(km\/h|mph))?$/.test(t.maxspeed) && !/^[A-Z]{2}:\w+$/.test(t.maxspeed) && !['walk', 'none'].includes(t.maxspeed))
       list.push({ severity: 'warn', kind: 'maxspeed-format', msg: `maxspeed="${t.maxspeed}" не распознаётся адаптерами`, wayIds: [w.id], nodeIds: [], ...p });
   }
+
+  for (const w of roads) if (w.tags[PEAK_TAG] !== undefined && normalizePeak(w.tags[PEAK_TAG]) !== w.tags[PEAK_TAG])
+    list.push({ severity: 'warn', kind: 'peak-format', msg: `peak_hours="${w.tags[PEAK_TAG]}" — ожидается «ЧЧ:ММ-ЧЧ:ММ», несколько через «;»`, wayIds: [w.id], nodeIds: [], ...pt(w) });
 
   // 2b. Нереалистичные ограничения скорости
   for (const w of roads) {

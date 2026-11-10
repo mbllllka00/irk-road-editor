@@ -1,6 +1,7 @@
 // Слой «линий»: цепочки рёбер OSM, которые пользователь воспринимает как одну дорогу/тротуар.
 // Линия строится на лету из документа (ничего не хранится отдельно, расхождения невозможны).
 import type { Doc, OsmWay, Tags } from '../core/types.ts';
+import { isUnderpass } from '../core/roadStyle.ts';
 import { isRoad, onewayDir } from '../core/osm.ts';
 import { isPed } from '../core/roadStyle.ts';
 import { dist, projectOnSegment } from '../core/geo.ts';
@@ -143,7 +144,7 @@ export function pointAt(doc: Doc, l: Line, d: number) {
 }
 
 // ---------- чтение «меток» из тегов ----------
-export interface Run { from: number; to: number; hw: string; maxspeed: string; lanes: string; surface: string; dir: 'both' | 'forward' | 'backward' }
+export interface Run { from: number; to: number; hw: string; maxspeed: string; lanes: string; surface: string; peak: string; ug: boolean; dir: 'both' | 'forward' | 'backward' }
 export interface PointMark { dist: number; nodeId: number; type: 'crossing' | 'give_way' | 'stop' | 'signals'; label: string }
 
 export function describeLine(doc: Doc, l: Line): { runs: Run[]; marks: PointMark[] } {
@@ -152,10 +153,10 @@ export function describeLine(doc: Doc, l: Line): { runs: Run[]; marks: PointMark
     const t = doc.ways.get(s.wayId)!.tags, d = dirIn(doc.ways.get(s.wayId)!, s.reversed);
     const r: Run = {
       from: l.cum[l.segStart[k]], to: l.cum[l.segStart[k + 1]], hw: t.highway ?? '', maxspeed: t.maxspeed ?? '',
-      lanes: t.lanes ?? '', surface: t.surface ?? '', dir: d === 0 ? 'both' : d === 1 ? 'forward' : 'backward',
+      lanes: t.lanes ?? '', surface: t.surface ?? '', peak: t.peak_hours ?? '', ug: isUnderpass(t), dir: d === 0 ? 'both' : d === 1 ? 'forward' : 'backward',
     };
     const p = runs[runs.length - 1];
-    if (p && p.hw === r.hw && p.maxspeed === r.maxspeed && p.lanes === r.lanes && p.surface === r.surface && p.dir === r.dir) p.to = r.to;
+    if (p && p.hw === r.hw && p.maxspeed === r.maxspeed && p.lanes === r.lanes && p.surface === r.surface && p.peak === r.peak && p.ug === r.ug && p.dir === r.dir) p.to = r.to;
     else runs.push(r);
   });
   const marks: PointMark[] = [];
