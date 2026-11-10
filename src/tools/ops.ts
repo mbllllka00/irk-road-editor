@@ -3,6 +3,7 @@
 import type { Doc, Attrs, Tags, OsmWay } from '../core/types.ts';
 import { onewayDir } from '../core/osm.ts';
 import { dist, projectOnSegment } from '../core/geo.ts';
+import { PSEUDO_CLASSES, hwKey } from '../core/roadStyle.ts';
 
 export const newId = (doc: Doc) => doc.nextId--;
 export function touch(o: { id: number; attrs: Attrs }) { if (o.id > 0) o.attrs.action = 'modify'; }
@@ -15,6 +16,17 @@ export function applyTags(doc: Doc, wayIds: number[], tags: Tags) {
   for (const id of wayIds) { const w = doc.ways.get(id); if (w) for (const [k, v] of Object.entries(tags)) setTag(w, k, v); }
 }
 
+/** Сменить класс ребра (значение из HIGHWAY_CLASSES). Составные классы (подземка, парковка, трамвай) ставят и убирают свои теги. */
+export function applyClass(doc: Doc, wayIds: number[], v: string) {
+  for (const id of wayIds) {
+    const w = doc.ways.get(id); if (!w) continue;
+    const cur = hwKey(w.tags), prev = PSEUDO_CLASSES[cur];
+    if (cur === v) continue;
+    if (prev) for (const k of prev.clear) setTag(w, k, ''); // уходим с «составного» класса: убираем его теги
+    const ps = PSEUDO_CLASSES[v];
+    if (ps) for (const [k, val] of Object.entries(ps.set)) setTag(w, k, val); else setTag(w, 'highway', v);
+  }
+}
 export function addNode(doc: Doc, lat: number, lon: number, tags: Tags = {}): number {
   const id = newId(doc);
   doc.nodes.set(id, { id, lat, lon, tags, attrs: {} });
@@ -29,6 +41,22 @@ export function moveNode(doc: Doc, id: number, lat: number, lon: number) {
   const n = doc.nodes.get(id); if (!n) return;
   n.lat = lat; n.lon = lon; touch(n);
   for (const w of doc.ways.values()) if (w.nodes.includes(id)) touch(w); // геометрия way изменилась
+}
+
+/** Сдвинуть все вершины ребра/области на (dLat, dLon): перетаскивание области целиком. */
+export function moveWayBy(doc: Doc, wayId: number, dLat: number, dLon: number) {
+  const w = doc.ways.get(wayId); if (!w) return;
+  const ids = new Set(w.nodes);
+  for (const id of ids) { const n = doc.nodes.get(id); if (n) { n.lat += dLat; n.lon += dLon; touch(n); } }
+  for (const o of doc.ways.values()) if (o.nodes.some(x => ids.has(x))) touch(o);
+}
+/** Замкнутая область (парковка и т.п.) по списку точек. null — если точек меньше трёх. */
+export function addPolygon(doc: Doc, pts: { lat: number; lon: number }[], tags: Tags): number | null {
+  const u = pts.filter((p, i) => i === 0 || !(Math.abs(p.lat - pts[i - 1].lat) < 1e-9 && Math.abs(p.lon - pts[i - 1].lon) < 1e-9));
+  if (u.length > 1 && Math.abs(u[0].lat - u[u.length - 1].lat) < 1e-9 && Math.abs(u[0].lon - u[u.length - 1].lon) < 1e-9) u.pop();
+  if (u.length < 3) return null;
+  const ids = u.map(p => addNode(doc, p.lat, p.lon));
+  return addWay(doc, [...ids, ids[0]], tags);
 }
 
 // ---------- привязка к ребру / вставка узла ----------
@@ -238,6 +266,7 @@ export const TEMPLATES: Record<string, Tags> = {
   'Односторонняя: 1 полоса (двор)': { highway: 'service', service: '', lanes: '1', oneway: 'yes', maxspeed: '20', 'lanes:forward': '', 'lanes:backward': '' },
   'Парковка: проезд между местами': { highway: 'service', service: 'parking_aisle', lanes: '', oneway: '', maxspeed: '10', 'lanes:forward': '', 'lanes:backward': '' },
   'Подземный пешеходный переход': { highway: 'footway', tunnel: 'yes', layer: '-1', lanes: '', oneway: '', maxspeed: '', 'lanes:forward': '', 'lanes:backward': '' },
+  'Трамвайные пути': { railway: 'tram', highway: '', lanes: '', oneway: '', maxspeed: '40', 'lanes:forward': '', 'lanes:backward': '', service: '', junction: '' },
   'Кольцо': { highway: 'residential', junction: 'roundabout', oneway: 'yes', lanes: '1', maxspeed: '30' },
 };
 export function applyTemplate(doc: Doc, wayIds: number[], name: string) {

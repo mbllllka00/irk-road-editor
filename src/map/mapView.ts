@@ -4,12 +4,12 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Doc, Issue, Sel } from '../core/types.ts';
 import { isRoad, onewayDir } from '../core/osm.ts';
 import { junctionNodes } from './signals.ts';
-import { categorize, lineWidth, isUnderpass } from '../core/roadStyle.ts';
+import { categorize, lineWidth, isUnderpass, isPed, isTram } from '../core/roadStyle.ts';
 import type { ColorMode } from '../core/roadStyle.ts';
 import { buildCompareFeatures, graphWay } from '../core/compareMap.ts';
 import type { DiffReport } from '../core/diff.ts';
 
-export interface ClickInfo { lng: number; lat: number; nodeId?: number; wayId?: number; shift: boolean; ctrl: boolean }
+export interface ClickInfo { lng: number; lat: number; nodeId?: number; wayId?: number; areaId?: number; edgeId?: number; shift: boolean; ctrl: boolean }
 export interface Handlers {
   onClick(e: ClickInfo): void;
   onDblClick(): void;
@@ -18,6 +18,10 @@ export interface Handlers {
   onDrag(nodeId: number, lat: number, lon: number): void;
   onDragEnd(nodeId: number): void;
   boxAllowed(): boolean;
+  areaDragAllowed?(areaId: number): boolean;
+  onAreaStart?(): void;
+  onAreaMove?(areaId: number, dLat: number, dLon: number): void;
+  onAreaEnd?(): void;
   shapeAllowed?(): boolean;
   onShape?(phase: 'move' | 'end', a: { lat: number; lng: number }, b: { lat: number; lng: number }, shift: boolean): void;
   onBox(ways: number[], nodes: number[], additive: boolean): void;
@@ -28,7 +32,7 @@ type Args = [Doc, Sel[], Issue[], [number, number][]];
 
 const EMPTY = { type: 'FeatureCollection', features: [] as any[] };
 const NORMAL_LAYERS = [
-  'parking-fill', 'parking-line', 'buildings', 'roads-sel', 'roads-ug-halo', 'roads-case', 'roads',
+  'parking-fill', 'parking-line', 'parking-sel', 'buildings', 'roads-sel', 'roads-ug-halo', 'roads-case', 'roads',
   'roads-dash', 'roads-bridge', 'roads-bad', 'arrows', 'nodes', 'sig-halo', 'nodes-ic',
   'nodes-sel', 'nodes-selring', 'issues', 'ug-ic', 'draft', 'draftpts',
 ];
@@ -49,9 +53,11 @@ export class MapView {
   private preview: { doc: Doc; nodeId: number } | null = null;
   private roadsByNode = new Map<number, number[]>();
   private visibleNodes = new Set<number>();
+  private parkByNode = new Map<number, number[]>();
   private comparison = false;
   private pendingComparison: { original: Doc; current: Doc; report: DiffReport } | null = null;
   private comparisonRoadsByNode = new Map<number, number[]>();
+  private areaDrag: { id: number; lat: number; lng: number } | null = null;
   private suppressClick = false;
   private base: Base = 'sat';
   private opacity = 0.85;
@@ -125,10 +131,11 @@ export class MapView {
     icon('cr', 24, 24, g => zebra(g, false));
     icon('cr-sig', 24, 24, g => zebra(g, true));
 
-    for (const s of ['ug', 'parking', 'buildings', 'roads', 'nodes', 'issues', 'draft', 'draftpts', 'compare-roads', 'compare-nodes']) m.addSource(s, { type: 'geojson', data: EMPTY as any, ...(['roads', 'nodes', 'compare-roads', 'compare-nodes'].includes(s) ? { promoteId: 'id' } : {}) });
+    for (const s of ['ug', 'parking', 'buildings', 'roads', 'nodes', 'issues', 'draft', 'draftpts', 'compare-roads', 'compare-nodes']) m.addSource(s, { type: 'geojson', data: EMPTY as any, ...(['roads', 'nodes', 'parking', 'compare-roads', 'compare-nodes'].includes(s) ? { promoteId: 'id' } : {}) });
 
     m.addLayer({ id: 'parking-fill', type: 'fill', source: 'parking', paint: { 'fill-color': '#a21caf', 'fill-opacity': 0.22 } });
     m.addLayer({ id: 'parking-line', type: 'line', source: 'parking', paint: { 'line-color': '#a21caf', 'line-width': 1.5, 'line-dasharray': [3, 2] } });
+    m.addLayer({ id: 'parking-sel', type: 'line', source: 'parking', filter: ['==', ['get', 'sel'], 1], layout: { 'line-join': 'round' }, paint: { 'line-color': '#00e5ff', 'line-width': 4, 'line-opacity': 0.95 } });
     m.addLayer({ id: 'buildings', type: 'fill-extrusion', source: 'buildings', paint: { 'fill-extrusion-color': '#b9b3a8', 'fill-extrusion-height': ['get', 'h'], 'fill-extrusion-opacity': 0 } });
     // ширина линии: zoom-выражение должно быть верхнего уровня, поэтому смещение вшито внутрь
     const lw = (off: number): any => ['interpolate', ['linear'], ['zoom'], 12, ['+', ['max', 1, ['/', ['get', 'lw'], 3]], off], 18, ['+', ['get', 'lw'], off]];
@@ -209,8 +216,9 @@ export class MapView {
       m.queryRenderedFeatures([[p.x - r, p.y - r], [p.x + r, p.y + r]], { layers: layers.filter(l => m.getLayer(l)) });
     m.on('click', e => {
       if (this.suppressClick || !this.loaded) return;
-      const n = this.hitCurrentNodes(e.point, 9, hit), r = this.hitCurrentWays(e.point, 6, hit);
-      this.h.onClick({ lng: e.lngLat.lng, lat: e.lngLat.lat, nodeId: n ? Number(n.properties!.id) : undefined, wayId: r ? Number(r.properties!.id) : undefined, shift: e.originalEvent.shiftKey, ctrl: e.originalEvent.ctrlKey || e.originalEvent.metaKey });
+      const n = this.hitCurrentNodes(e.point, 9, hit), r = this.hitCurrentWays(e.point, 8, hit);
+      const ar = this.comparison ? undefined : hit(e.point, ['parking-fill'], 0)[0], ed = this.comparison ? undefined : hit(e.point, ['parking-line'], 8)[0];
+      this.h.onClick({ lng: e.lngLat.lng, lat: e.lngLat.lat, nodeId: n ? Number(n.properties!.id) : undefined, wayId: r ? Number(r.properties!.id) : undefined, areaId: ar ? Number(ar.properties!.id) : undefined, edgeId: ed ? Number(ed.properties!.id) : undefined, shift: e.originalEvent.shiftKey, ctrl: e.originalEvent.ctrlKey || e.originalEvent.metaKey });
     });
     m.on('dblclick', () => this.h.onDblClick());
     // Shift+клик в MapLibre по умолчанию запускает zoom-рамку и подавляет click: из-за этого множественное выделение не работало.
@@ -225,7 +233,13 @@ export class MapView {
         this.box = { x: e.point.x, y: e.point.y, el }; m.dragPan.disable(); return;
       }
       if (oe.shiftKey || oe.ctrlKey || oe.metaKey) return;
-      const n = this.hitCurrentNodes(e.point, 8, hit); if (!n) return;
+      const n = this.hitCurrentNodes(e.point, 8, hit);
+      if (!n) { // перетаскивание выбранной области (парковки) целиком; если под курсором дорога, дорога важнее
+        if (this.comparison || this.hitCurrentWays(e.point, 6, hit)) return;
+        const ar = hit(e.point, ['parking-fill'], 0)[0], aid = ar ? Number(ar.properties!.id) : NaN;
+        if (aid && this.h.areaDragAllowed?.(aid)) { e.preventDefault(); this.areaDrag = { id: aid, lat: e.lngLat.lat, lng: e.lngLat.lng }; m.dragPan.disable(); this.h.onAreaStart?.(); m.getCanvas().style.cursor = 'grabbing'; }
+        return;
+      }
       const id = Number(n.properties!.id);
       if (!this.h.dragAllowed(id)) return;
       // Не начинаем правку от одного клика: drag начинается только после сдвига на 3 px.
@@ -237,6 +251,7 @@ export class MapView {
         m.getCanvas().style.cursor = 'grabbing';
       }
       if (this.dragging !== null) this.h.onDrag(this.dragging, e.lngLat.lat, e.lngLat.lng);
+      if (this.areaDrag) { const a = this.areaDrag; this.h.onAreaMove?.(a.id, e.lngLat.lat - a.lat, e.lngLat.lng - a.lng); a.lat = e.lngLat.lat; a.lng = e.lngLat.lng; }
       const sp = this.shape;
       if (sp) {
         if (!sp.active && Math.hypot(e.point.x - sp.x, e.point.y - sp.y) > 5) sp.active = true;
@@ -270,6 +285,10 @@ export class MapView {
         }
         return;
       }
+      if (this.areaDrag) {
+        this.areaDrag = null; m.dragPan.enable(); m.getCanvas().style.cursor = ''; this.h.onAreaEnd?.();
+        this.suppressClick = true; setTimeout(() => (this.suppressClick = false), 50); return;
+      }
       if (!this.dragCandidate) return;
       this.dragCandidate = null; m.dragPan.enable(); m.getCanvas().style.cursor = '';
       if (this.dragging === null) return; // обычный клик без перемещения
@@ -279,6 +298,7 @@ export class MapView {
     });
     // Если отпустить кнопку за пределами карты, завершаем drag и возвращаем dragPan.
     window.addEventListener('mouseup', () => {
+      if (this.areaDrag) { this.areaDrag = null; m.dragPan.enable(); m.getCanvas().style.cursor = ''; this.h.onAreaEnd?.(); return; }
       if (!this.dragCandidate) return;
       this.dragCandidate = null; m.dragPan.enable(); m.getCanvas().style.cursor = '';
       if (this.dragging !== null) {
@@ -294,7 +314,7 @@ export class MapView {
     const selWays = new Set(sel.filter(s => s.type === 'way').map(s => s.id));
     const selNodes = new Set(sel.filter(s => s.type === 'node').map(s => s.id));
     const badWays = new Set(issues.filter(i => i.severity !== 'info').flatMap(i => i.wayIds));
-    const roadIndex = new Map<number, number[]>();
+    const roadIndex = new Map<number, number[]>(), parkIndex = new Map<number, number[]>();
     const roads: any[] = [], blds: any[] = [], park: any[] = [], ugs: any[] = [], usage = new Map<number, number>(), inSel = new Set<number>(), show = new Set<number>();
     for (const w of doc.ways.values()) {
       const t = w.tags;
@@ -304,7 +324,12 @@ export class MapView {
         blds.push({ type: 'Feature', properties: { h }, geometry: { type: 'Polygon', coordinates: [coords] } });
         continue;
       }
-      if (t.amenity === 'parking' && coords.length > 3) { park.push({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [coords] } }); continue; }
+      if (t.amenity === 'parking' && coords.length > 3) {
+        park.push({ type: 'Feature', properties: { id: w.id, sel: selWays.has(w.id) ? 1 : 0 }, geometry: { type: 'Polygon', coordinates: [coords] } });
+        if (selWays.has(w.id)) for (const id of w.nodes) inSel.add(id); // вершины выбранной парковки
+        for (const id of new Set(w.nodes)) { const l = parkIndex.get(id) ?? []; l.push(w.id); parkIndex.set(id, l); }
+        continue;
+      }
       if (!(t.highway || t.railway === 'tram') || coords.length < 2) continue;
       for (const id of new Set(w.nodes)) {
         const links = roadIndex.get(id) ?? []; links.push(w.id); roadIndex.set(id, links);
@@ -319,9 +344,12 @@ export class MapView {
         geometry: { type: 'LineString', coordinates: coords },
       });
       if (isUnderpass(t)) { const c = coords[Math.floor(coords.length / 2)]; ugs.push({ type: 'Feature', properties: { id: w.id }, geometry: { type: 'Point', coordinates: c } }); }
-      if (isRoad(t)) for (const id of w.nodes) { usage.set(id, (usage.get(id) ?? 0) + 1); if (selWays.has(w.id)) inSel.add(id); }
+      // вершины выбранного ребра показываем и для тротуаров/пешеходных линий (раньше только для дорог: тротуар нельзя было тянуть за узлы)
+      if (isRoad(t)) for (const id of w.nodes) usage.set(id, (usage.get(id) ?? 0) + 1);
+      if ((isRoad(t) || isPed(t) || isTram(t)) && selWays.has(w.id)) for (const id of w.nodes) inSel.add(id);
     }
-    for (const [id, c] of usage) if (c > 1 || inSel.has(id)) show.add(id);
+    for (const [id, c] of usage) if (c > 1) show.add(id);
+    for (const id of inSel) show.add(id); // вершины выбранных тротуаров/трамвая/парковок (раньше терялись: цикл шёл только по узлам дорог)
     const MK = ['crossing', 'give_way', 'stop'], junc = junctionNodes(doc);
     for (const n of doc.nodes.values()) if (n.tags.highway === 'traffic_signals' || MK.includes(n.tags.highway) || selNodes.has(n.id)) show.add(n.id);
     const iconOf = (t: Record<string, string>, id: number) =>
@@ -331,7 +359,7 @@ export class MapView {
       type: 'Feature', properties: { id: n!.id, mk: n!.tags.highway === 'give_way' || n!.tags.highway === 'stop' ? n!.tags.highway : '', ic: iconOf(n!.tags, n!.id), sel: selNodes.has(n!.id) ? 1 : 0, wsel: inSel.has(n!.id) ? 1 : 0 },
       geometry: { type: 'Point', coordinates: [n!.lon, n!.lat] },
     }));
-    this.roadsByNode = roadIndex; this.visibleNodes = show;
+    this.roadsByNode = roadIndex; this.parkByNode = parkIndex; this.visibleNodes = show;
     const pts: any[] = issues.filter(i => i.lat !== undefined).map(i => ({ type: 'Feature', properties: { sev: i.severity }, geometry: { type: 'Point', coordinates: [i.lon, i.lat] } }));
     const set = (id: string, features: any[]) => (this.map.getSource(id) as maplibregl.GeoJSONSource).setData({ type: 'FeatureCollection', features } as any);
     set('roads', roads); set('nodes', nodes); set('buildings', blds); set('parking', park); set('ug', ugs); set('issues', pts);
@@ -388,6 +416,14 @@ export class MapView {
         if (coordinates.length >= 2) updates.push({ id, newGeometry: { type: 'LineString', coordinates } });
       }
       if (updates.length) (this.map.getSource(this.comparison ? 'compare-roads' : 'roads') as maplibregl.GeoJSONSource).updateData({ update: updates });
+      if (!this.comparison) { // контур парковки следует за перетаскиваемой вершиной
+        const pu: { id: number; newGeometry: any }[] = [];
+        for (const id of this.parkByNode.get(nodeId) ?? []) {
+          const w = doc.ways.get(id); if (!w) continue;
+          pu.push({ id, newGeometry: { type: 'Polygon', coordinates: [w.nodes.map(nid => doc.nodes.get(nid)).filter(Boolean).map(n => [n!.lon, n!.lat])] } });
+        }
+        if (pu.length) (this.map.getSource('parking') as maplibregl.GeoJSONSource).updateData({ update: pu });
+      }
       const n = doc.nodes.get(nodeId);
       if (n && (this.comparison || this.visibleNodes.has(nodeId))) (this.map.getSource(this.comparison ? 'compare-nodes' : 'nodes') as maplibregl.GeoJSONSource)
         .updateData({ update: [{ id: nodeId, newGeometry: { type: 'Point', coordinates: [n.lon, n.lat] } }] });

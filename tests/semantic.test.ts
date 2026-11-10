@@ -154,3 +154,55 @@ test('нормализация не склеивает рёбра с метка�
   d.nodes.get(3)!.tags.highway = 'give_way';
   assert.equal(normalize(d), 0);
 });
+
+test('переход: ставится на тротуар, не зависит от «линий»; повторный клик переключает, а не дублирует', () => {
+  const s = mk(); for (let i = 1; i <= 3; i++) s.n(i, 0, i - 1);
+  s.w(1, [1, 2, 3], { highway: 'footway' });
+  assert.equal(M.addCrossing(s.d, at(s.d, 1, 0.75), false).err, undefined);
+  assert.equal([...s.d.nodes.values()].filter(x => x.tags.highway === 'crossing').length, 1);
+  assert.equal(M.addCrossing(s.d, at(s.d, 1, 0.75), true).err, undefined);
+  const cr = [...s.d.nodes.values()].filter(x => x.tags.highway === 'crossing');
+  assert.equal(cr.length, 1);
+  assert.equal(cr[0].tags.crossing, 'traffic_signals');
+});
+
+test('переход на выбранном узле: setCrossing / removeCrossing; на светофоре перекрёстка — отказ', () => {
+  const d = scene();
+  assert.equal(M.setCrossing(d, 2, false).err, undefined);
+  assert.equal(d.nodes.get(2)!.tags.highway, 'crossing');
+  assert.equal(M.removeCrossing(d, 2).err, undefined);
+  assert.equal(d.nodes.get(2)!.tags.highway, undefined);
+  d.nodes.get(3)!.tags.highway = 'traffic_signals';
+  assert.ok(M.setCrossing(d, 3, false).err);
+});
+
+test('класс «трамвайные пути»: highway убирается, railway=tram ставится, обратно возвращается', async () => {
+  const ops = await import('../src/tools/ops.ts');
+  const { isTram, hwKey } = await import('../src/core/roadStyle.ts');
+  const d = scene(); // way 10: primary, lanes=2
+  ops.applyClass(d, [10], 'railway:tram');
+  const w = d.ways.get(10)!;
+  assert.equal(w.tags.highway, undefined);
+  assert.equal(w.tags.railway, 'tram');
+  assert.equal(w.tags.lanes, undefined);
+  assert.ok(isTram(w.tags));
+  assert.equal(hwKey(w.tags), 'railway:tram');
+  assert.equal(lineOfWay(d, 10)!.kind, 'tram');
+  ops.applyClass(d, [10], 'residential');
+  assert.equal(w.tags.railway, undefined);
+  assert.equal(w.tags.highway, 'residential');
+});
+
+test('парковка: создание области и перенос целиком', async () => {
+  const ops = await import('../src/tools/ops.ts');
+  const d = newDoc();
+  const pts = [{ lat: 52.28, lon: 104.28 }, { lat: 52.28, lon: 104.281 }, { lat: 52.281, lon: 104.281 }];
+  assert.equal(ops.addPolygon(d, pts.slice(0, 2), { amenity: 'parking' }), null);
+  const id = ops.addPolygon(d, pts, { amenity: 'parking', parking: 'surface' })!;
+  const w = d.ways.get(id)!;
+  assert.equal(w.nodes.length, 4); assert.equal(w.nodes[0], w.nodes[3]);
+  const before = d.nodes.get(w.nodes[0])!.lat;
+  ops.moveWayBy(d, id, 0.0005, 0.001);
+  assert.ok(Math.abs(d.nodes.get(w.nodes[0])!.lat - before - 0.0005) < 1e-12);
+  assert.equal(new Set(w.nodes).size, 3);
+});

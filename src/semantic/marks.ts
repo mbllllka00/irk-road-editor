@@ -3,6 +3,7 @@
 import type { Doc, Tags } from '../core/types.ts';
 import { isRoad } from '../core/osm.ts';
 import * as ops from '../tools/ops.ts';
+import { dist } from '../core/geo.ts';
 import { buildLines, lineOfWay, locate, pointAt, wayIdsOf } from './lines.ts';
 import type { Line } from './lines.ts';
 import { canonicalOneway, normalize } from './compile.ts';
@@ -81,16 +82,48 @@ function applyToSegs(doc: Doc, l: Line, lo: number, hi: number, travel: 1 | -1, 
 }
 
 // ---------- переходы ----------
-export function addCrossing(doc: Doc, p: PointRef, signalized: boolean): Res {
-  const l = lineOfWay(doc, p.wayId); if (!l) return fail('Линия не найдена');
-  const loc = locate(doc, l, p.lat, p.lon), pt = pointAt(doc, l, loc.dist);
-  const id = ops.nodeOnWayAt(doc, pt.wayId, pt.lat, pt.lon); if (id === null) return fail('Не удалось поставить переход');
-  const n = doc.nodes.get(id)!;
-  if (n.tags.highway === 'traffic_signals') return fail('В этом узле уже светофор перекрёстка: поставьте переход в стороне от него');
+function writeCrossing(n: { tags: Tags; id: number; attrs: Record<string, string> }, signalized: boolean) {
   n.tags.highway = 'crossing';
   n.tags.crossing = signalized ? 'traffic_signals' : 'uncontrolled';
   if (signalized) n.tags['crossing:signals'] = 'yes'; else delete n.tags['crossing:signals'];
   ops.touch(n);
+}
+
+/** Поставить/изменить переход на уже существующем узле (выбранном вручную). */
+export function setCrossing(doc: Doc, nodeId: number, signalized: boolean): Res {
+  const n = doc.nodes.get(nodeId); if (!n) return fail('Узел не найден');
+  if (n.tags.highway === 'traffic_signals') return fail('В этом узле светофор перекрёстка: выберите соседний узел или поставьте переход в стороне');
+  if (![...doc.ways.values()].some(w => w.nodes.includes(nodeId))) return fail('Узел не принадлежит ни одной линии');
+  writeCrossing(n, signalized);
+  return { msg: signalized ? 'Переход: регулируемый' : 'Переход: нерегулируемый' };
+}
+
+/** Убрать переход с узла (сам узел остаётся в линии). */
+export function removeCrossing(doc: Doc, nodeId: number): Res {
+  const n = doc.nodes.get(nodeId); if (!n || n.tags.highway !== 'crossing') return fail('В этом узле нет перехода');
+  delete n.tags.highway; delete n.tags.crossing; delete n.tags['crossing:signals'];
+  ops.touch(n);
+  return { msg: 'Переход убран' };
+}
+
+/**
+ * Переход одним кликом по линии (дорога, тротуар, пешеходная линия — любое ребро с highway).
+ * Не зависит от построения «линий»: узел вставляется прямо в кликнутое ребро.
+ * Если рядом (≤ 3 м) уже есть переход, он просто переключается, а не дублируется.
+ */
+export function addCrossing(doc: Doc, p: PointRef, signalized: boolean): Res {
+  const w = doc.ways.get(p.wayId);
+  if (!w || !w.tags.highway) return fail('Кликните по дороге или тротуару');
+  const near = ops.nearestOnWay(doc, p.wayId, p.lat, p.lon);
+  if (!near) return fail('Не удалось найти точку на линии');
+  for (const id of w.nodes) {
+    const x = doc.nodes.get(id);
+    if (x && x.tags.highway === 'crossing' && dist(x, near) <= 3) { writeCrossing(x, signalized); return { msg: signalized ? 'Переход переключён: регулируемый' : 'Переход переключён: нерегулируемый' }; }
+  }
+  const id = ops.nodeOnWayAt(doc, p.wayId, p.lat, p.lon); if (id === null) return fail('Не удалось поставить переход');
+  const n = doc.nodes.get(id)!;
+  if (n.tags.highway === 'traffic_signals') return fail('В этом узле уже светофор перекрёстка: кликните чуть в стороне от него (> 2 м)');
+  writeCrossing(n, signalized);
   return { msg: signalized ? 'Переход: регулируемый' : 'Переход: нерегулируемый' };
 }
 

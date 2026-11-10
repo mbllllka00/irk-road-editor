@@ -9,7 +9,7 @@ import * as ops from './ops.ts';
 import { lineOfWay, describeLine } from '../semantic/lines.ts';
 
 export interface PanelActions {
-  reverse(): void; toggleOneway(): void; bridge(): void; smooth(): void; signal(): void; del(): void;
+  reverse(): void; toggleOneway(): void; bridge(): void; smooth(): void; signal(): void; crossing(signalized: boolean): void; removeCrossing(): void; del(): void;
   copyAttrs(): void; pasteAttrs(): void; hasCopy(): boolean; selectLine(): void; mergeWays(): void; applyTemplate(): void; focusIssue(i: Issue): void; msg(s: string): void;
 }
 const COMMON_KEYS = ['highway', 'oneway', 'lanes', 'lanes:forward', 'lanes:backward', 'maxspeed', 'turn:lanes', 'junction', 'bridge', 'layer', 'tunnel', 'surface', 'name', 'ele'];
@@ -108,13 +108,7 @@ function styleControls(store: Store, ways: number[]): HTMLElement {
   const grp = Object.fromEntries(HIGHWAY_CLASSES.map(c => [c.value, c.group]));
   box.append(selectRow('Класс дороги', hwOpts, hw, v => {
     if (!v) return;
-    store.commit(d => { for (const id of ways) {
-      const w = d.ways.get(id); if (!w) continue;
-      const prev = PSEUDO_CLASSES[hwKey(w.tags)];
-      if (prev && hwKey(w.tags) !== v) for (const k of prev.clear) ops.setTag(w, k, ''); // уходим с «составного» класса: убираем его теги
-      const ps = PSEUDO_CLASSES[v];
-      if (ps) for (const [k, val] of Object.entries(ps.set)) ops.setTag(w, k, val); else ops.setTag(w, 'highway', v);
-    } });
+    store.commit(d => ops.applyClass(d, ways, v));
   }, grp));
   const sw = CLASS_CATS.find(c => c.key === (PSEUDO_CLASSES[hw ?? '']?.cat ?? hw));
   if (sw) { const d = document.createElement('div'); d.className = 'muted'; d.innerHTML = `<span class="sw" style="background:${sw.color}"></span>цвет на карте в раскраске «класс»`; box.appendChild(d); }
@@ -186,7 +180,14 @@ export function renderProps(el: HTMLElement, store: Store, a: PanelActions, issu
   };
   if (ways.length === 0 && nodes.length === 0) { h.textContent = 'Свойства'; el.insertAdjacentHTML('beforeend', '<div class="muted">Ничего не выбрано. Кликните по ребру или узлу (Shift — несколько). Список горячих клавиш: «?»</div>'); return; }
 
-  if (ways.length === 1 && !nodes.length) {
+  if (ways.length === 1 && !nodes.length && doc.ways.get(ways[0])!.tags.amenity === 'parking' && !doc.ways.get(ways[0])!.tags.highway) {
+    const w = doc.ways.get(ways[0])!;
+    h.textContent = `Парковка #${w.id} · вершин: ${new Set(w.nodes).size}`;
+    const b = document.createElement('div'); b.className = 'btns'; b.append(btn('Удалить', a.del)); el.appendChild(b);
+    el.insertAdjacentHTML('beforeend', '<div class="hint">Тяните вершины, чтобы изменить форму, или потяните за заливку, чтобы сдвинуть всю парковку. Новая вершина: режим «Узел» (N), клик по контуру. Удалить вершину: выбрать её и Delete.</div>');
+    el.appendChild(selectRow('Тип парковки', [['', '— не задано —'], ['surface', 'Наземная'], ['multi-storey', 'Многоуровневая'], ['underground', 'Подземная'], ['street_side', 'Вдоль улицы']], w.tags.parking ?? '', v => store.commit(d => ops.setTag(d.ways.get(w.id)!, 'parking', v))));
+    el.appendChild(tagTable(w.tags, (k, v) => store.commit(d => ops.setTag(d.ways.get(w.id)!, k, v))));
+  } else if (ways.length === 1 && !nodes.length) {
     const w = doc.ways.get(ways[0])!;
     h.textContent = `${w.tags.name ? w.tags.name + ' · ' : ''}Ребро #${w.id} · узлов: ${w.nodes.length} · ${onewayDir(w.tags) ? 'одностороннее' : 'двустороннее'}`;
     const b = document.createElement('div'); b.className = 'btns';
@@ -213,7 +214,9 @@ export function renderProps(el: HTMLElement, store: Store, a: PanelActions, issu
     const n = doc.nodes.get(nodes[0])!;
     h.textContent = `Узел #${n.id} · ${n.lat.toFixed(6)}, ${n.lon.toFixed(6)}`;
     const b = document.createElement('div'); b.className = 'btns';
-    b.append(btn(n.tags.highway === 'traffic_signals' ? 'Убрать светофор (S)' : 'Светофор (S)', a.signal), btn('Удалить', a.del));
+    b.append(btn(n.tags.highway === 'traffic_signals' ? 'Убрать светофор (S)' : 'Светофор (S)', a.signal));
+    if (n.tags.highway === 'crossing') b.append(btn('Убрать переход', a.removeCrossing));
+    b.append(btn('Переход нерегулируемый (P)', () => a.crossing(false)), btn('Переход регулируемый', () => a.crossing(true)), btn('Удалить', a.del));
     el.appendChild(b);
     if (n.tags.highway === 'traffic_signals') {
       const at = junctionNodes(doc).has(n.id);

@@ -3,10 +3,10 @@
 import type { Doc, OsmWay, Tags } from '../core/types.ts';
 import { isUnderpass } from '../core/roadStyle.ts';
 import { isRoad, onewayDir } from '../core/osm.ts';
-import { isPed } from '../core/roadStyle.ts';
+import { isPed, isTram } from '../core/roadStyle.ts';
 import { dist, projectOnSegment } from '../core/geo.ts';
 
-export type LineKind = 'road' | 'sidewalk';
+export type LineKind = 'road' | 'sidewalk' | 'tram';
 export interface LineSeg { wayId: number; reversed: boolean }
 export interface Line {
   kind: LineKind;
@@ -16,7 +16,7 @@ export interface Line {
   cum: number[];      // расстояние от начала линии до каждого узла, м
   total: number;
 }
-export const kindOf = (t: Tags): LineKind | null => (isRoad(t) ? 'road' : isPed(t) ? 'sidewalk' : null);
+export const kindOf = (t: Tags): LineKind | null => (isRoad(t) ? 'road' : isPed(t) ? 'sidewalk' : isTram(t) ? 'tram' : null);
 const dirIn = (w: OsmWay, rev: boolean) => onewayDir(w.tags) * (rev ? -1 : 1);
 
 interface Index { use: Map<number, number>; join: Map<string, string>; ways: Map<number, OsmWay> }

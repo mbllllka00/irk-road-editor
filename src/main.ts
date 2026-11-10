@@ -23,9 +23,10 @@ import type { IssueFilter } from './tools/panel.ts';
 import type { PanelActions } from './tools/panel.ts';
 import { validate, countBy } from './validator/validate.ts';
 
-type Mode = 'select' | 'node' | 'draw' | 'split' | 'merge' | 'mark' | 'repair' | 'ring';
+type Mode = 'select' | 'node' | 'draw' | 'split' | 'merge' | 'mark' | 'repair' | 'ring' | 'area';
 interface DraftPt { lat: number; lon: number; nodeId?: number; wayId?: number }
 
+const isArea = (t: Record<string, string>) => t.amenity === 'parking' && !t.highway;
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const store = new Store();
 let mode: Mode = 'select';
@@ -96,6 +97,8 @@ function pickOne(title: string, opts: [number, string][]): Promise<number | null
   });
 }
 async function handleMark(e: ClickInfo) {
+  // клик попал в узел, а не в линию: берём любое ребро, которому узел принадлежит
+  if (e.wayId === undefined && e.nodeId !== undefined) e.wayId = [...store.doc.ways.values()].find(w => w.tags.highway && w.nodes.includes(e.nodeId!))?.id;
   if (e.wayId === undefined) return msg('Кликните по линии (дороге или тротуару)');
   const mt = curType(), p: SM.PointRef = { wayId: e.wayId, lat: e.lat, lon: e.lng };
   const kind = lineOfWay(store.doc, p.wayId)?.kind;
@@ -172,6 +175,11 @@ const actions: PanelActions = {
     msg(store.tryCommit(d => ops.smoothEle(d, ws[0])) ?? 'Высота ele интерполирована по длине ребра');
   },
   signal() { const ns = store.selNodes(); if (ns.length) store.commit(d => ns.forEach(n => ops.toggleSignal(d, n))); },
+  crossing(signalized) {
+    const ns = store.selNodes(); if (ns.length !== 1) return msg('Выберите один узел на линии (режим «Выбор», клик по узлу), затем нажмите P');
+    runSem(d => SM.setCrossing(d, ns[0], signalized));
+  },
+  removeCrossing() { const ns = store.selNodes(); if (ns.length === 1) runSem(d => SM.removeCrossing(d, ns[0])); },
   del() {
     const ws = store.selWays(), ns = store.selNodes(); if (!ws.length && !ns.length) return;
     store.commit(d => { ws.forEach(w => ops.deleteWay(d, w)); ns.forEach(n => ops.deleteNode(d, n)); });
@@ -236,6 +244,7 @@ function autoMergeExactDuplicates() {
 
 interface Stats {
   file: string; date: string; nodes: number; ways: number; relations: number; roads: number; lengthKm: number;
+  tramWays: number; tramKm: number;
   oneway: number; bridges: number; tunnels: number; signalsAtJunction: number; signalsOffJunction: number; crossings: number;
   lanesMissing: number; maxspeedMissing: number; peakSet: number; components: number; largestPct: number;
   byClass: { key: string; label: string; count: number; km: number }[];
@@ -244,6 +253,7 @@ interface Stats {
 function collectStats(): Stats {
   const d = store.doc, DRIVE = new Set(['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street', 'service']);
   const roads = [...d.ways.values()].filter(w => DRIVE.has(w.tags.highway));
+  const trams = [...d.ways.values()].filter(w => !w.tags.highway && w.tags.railway === 'tram');
   const count = (fn: (w: typeof roads[number]) => boolean) => roads.filter(fn).length;
   const len = (w: typeof roads[number]) => { let m = 0; for (let i = 1; i < w.nodes.length; i++) { const a = d.nodes.get(w.nodes[i - 1]), b = d.nodes.get(w.nodes[i]); if (a && b) m += dist(a, b); } return m; };
   const parent = new Map<number, number>();
@@ -261,6 +271,7 @@ function collectStats(): Stats {
   for (const i of real) { const k = kinds.get(i.kind) ?? { severity: i.severity, count: 0 }; k.count++; if (i.severity === 'error') k.severity = 'error'; kinds.set(i.kind, k); }
   return {
     file: ($<HTMLInputElement>('fname').value.trim() || 'team1'), date: new Date().toLocaleString('ru-RU'),
+    tramWays: trams.length, tramKm: Math.round(trams.reduce((m, w) => m + len(w), 0) / 10) / 100,
     nodes: d.nodes.size, ways: d.ways.size, relations: d.relations.size, roads: roads.length, lengthKm: Math.round(total / 10) / 100,
     oneway: count(w => onewayDir(w.tags) !== 0), bridges: count(w => !!w.tags.bridge && w.tags.bridge !== 'no'), tunnels: count(w => !!w.tags.tunnel && w.tags.tunnel !== 'no'),
     signalsAtJunction: sig.atJunction, signalsOffJunction: sig.offJunction, crossings: sig.crossSignal + sig.crossPlain,
@@ -276,6 +287,7 @@ function statsText(s: Stats): string {
     `Статистика дорожной сети: ${s.file}`, `Сформировано: ${s.date}`, '',
     `Узлы: ${s.nodes} · рёбра (все way): ${s.ways} · отношения: ${s.relations}`,
     `Автомобильные рёбра: ${s.roads} · общая длина: ${s.lengthKm} км`,
+    `Трамвайные пути: ${s.tramWays} рёбер · ${s.tramKm} км`,
     `Односторонние: ${s.oneway} · мосты: ${s.bridges} · тоннели: ${s.tunnels}`,
     `Светофоры: ${s.signalsAtJunction} на перекрёстках, ${s.signalsOffJunction} вне перекрёстков · пешеходные переходы: ${s.crossings}`,
     `Полосы не заданы: ${s.lanesMissing} · maxspeed не задан: ${s.maxspeedMissing} · время пика задано: ${s.peakSet}`,
@@ -299,7 +311,7 @@ function showStats() {
   $('statsJson').onclick = () => { download(base + '.json', JSON.stringify(st, null, 2), 'application/json'); msg(`Статистика сохранена: ${base}.json`); };
   $('statsCsv').onclick = () => {
     const rows = [['показатель', 'значение'], ['узлы', st.nodes], ['рёбра', st.ways], ['отношения', st.relations], ['автомобильные рёбра', st.roads], ['длина, км', st.lengthKm],
-      ['односторонние', st.oneway], ['мосты', st.bridges], ['тоннели', st.tunnels], ['светофоры на перекрёстках', st.signalsAtJunction], ['светофоры вне перекрёстков', st.signalsOffJunction],
+      ['трамвайные рёбра', st.tramWays], ['трамвай, км', st.tramKm], ['односторонние', st.oneway], ['мосты', st.bridges], ['тоннели', st.tunnels], ['светофоры на перекрёстках', st.signalsAtJunction], ['светофоры вне перекрёстков', st.signalsOffJunction],
       ['пешеходные переходы', st.crossings], ['полосы не заданы', st.lanesMissing], ['maxspeed не задан', st.maxspeedMissing], ['время пика задано', st.peakSet],
       ['компонент связности', st.components], ['узлов в крупнейшей компоненте, %', st.largestPct], ['ошибок', st.issues.errors], ['предупреждений', st.issues.warnings],
       [], ['класс', 'рёбер', 'км'], ...st.byClass.map(c => [c.label, c.count, c.km])];
@@ -333,7 +345,7 @@ function createRoundabout(lat: number, lon: number, rx: number, ry: number) {
 // ---------- карта ----------
 const view = new MapView('map', {
   onClick: handleClick,
-  onDblClick: () => { if (mode === 'draw') finishDraft(); else if (mode === 'repair') finishRepair(); },
+  onDblClick: () => { if (mode === 'area') finishArea(); else if (mode === 'draw') finishDraft(); else if (mode === 'repair') finishRepair(); },
   dragAllowed: id => mode === 'select' && (store.selNodes().includes(id) || store.selWays().some(w => store.doc.ways.get(w)?.nodes.includes(id))),
   onDragStart: () => { store.dragging = true; store.checkpoint(); },
   onDrag: (id, lat, lon) => {
@@ -358,6 +370,10 @@ const view = new MapView('map', {
     if (node) ops.moveNode(store.doc, id, node.lat, node.lon);
     store.dragging = false; store.notify(); msg('Узел перемещён');
   },
+  areaDragAllowed: id => mode === 'select' && store.selWays().includes(id) && isArea(store.doc.ways.get(id)?.tags ?? {}),
+  onAreaStart: () => { store.dragging = true; store.checkpoint(); },
+  onAreaMove: (id, dLat, dLon) => { ops.moveWayBy(store.doc, id, dLat, dLon); store.notify(); },
+  onAreaEnd: () => { store.dragging = false; store.notify(); msg('Область перемещена'); },
   boxAllowed: () => mode === 'select',
   onBox: (ways, nodes, additive) => {
     const picked = [...ways.map(id => ({ type: 'way' as const, id })), ...nodes.map(id => ({ type: 'node' as const, id }))].filter(p => (p.type === 'way' ? store.doc.ways : store.doc.nodes).has(p.id));
@@ -371,7 +387,8 @@ function handleClick(e: ClickInfo) {
   const doc = store.doc;
   switch (mode) {
     case 'select': {
-      const hit = e.nodeId !== undefined ? { type: 'node' as const, id: e.nodeId } : e.wayId !== undefined ? { type: 'way' as const, id: e.wayId } : null;
+      const wid = e.wayId ?? e.areaId; // дорога/тротуар важнее области под ними
+      const hit = e.nodeId !== undefined ? { type: 'node' as const, id: e.nodeId } : wid !== undefined ? { type: 'way' as const, id: wid } : null;
       const add = e.shift || e.ctrl || multi;
       if (!hit) { if (!add) store.setSel([]); return; }
       const has = store.sel.some(s => s.type === hit.type && s.id === hit.id);
@@ -381,14 +398,15 @@ function handleClick(e: ClickInfo) {
     case 'node':
       if (e.nodeId !== undefined) { store.setSel([{ type: 'node', id: e.nodeId }]); break; }
       store.commit(d => {
-        const id = (e.wayId !== undefined ? ops.nodeOnWayAt(d, e.wayId, e.lat, e.lng) : null) ?? ops.addNode(d, e.lat, e.lng);
+        const onWay = e.wayId ?? e.edgeId;
+        const id = (onWay !== undefined ? ops.nodeOnWayAt(d, onWay, e.lat, e.lng) : null) ?? ops.addNode(d, e.lat, e.lng);
         store.sel = [{ type: 'node', id }];
       });
       break;
     case 'draw': {
       const n = e.nodeId !== undefined ? doc.nodes.get(e.nodeId) : undefined;
       draft.push({ lat: n?.lat ?? e.lat, lon: n?.lon ?? e.lng, nodeId: e.nodeId, wayId: e.nodeId === undefined ? e.wayId : undefined });
-      redraw(); msg(`Точек: ${draft.length}. Enter или двойной клик — завершить, Esc — отмена`);
+      redraw(); msg(`Точек: ${draft.length}. Enter или двойной клик — завершить, Backspace — убрать последнюю точку, Esc — отмена`);
       break;
     }
     case 'split': {
@@ -402,6 +420,10 @@ function handleClick(e: ClickInfo) {
       msg(err ?? 'Ребро разрезано');
       break;
     }
+    case 'area':
+      draft.push({ lat: e.lat, lon: e.lng });
+      redraw(); msg(`Парковка: точек ${draft.length}. Enter или двойной клик — завершить (нужно минимум 3), Backspace — убрать последнюю точку, Esc — отмена`);
+      break;
     case 'mark': handleMark(e); break;
     case 'repair': handleRepair(e); break;
     case 'ring': { const r = readRingCfg().radius; createRoundabout(e.lat, e.lng, r, r); break; }
@@ -416,6 +438,31 @@ function handleClick(e: ClickInfo) {
   }
 }
 
+/** Отменить последнюю поставленную точку незавершённого построения (ребро, парковка, участок, метка). true — было что отменять. */
+function undoDraftPoint(): boolean {
+  if (mode === 'draw' || mode === 'area') {
+    if (!draft.length) return false;
+    draft.pop(); redraw();
+    return msg(draft.length ? `Последняя точка отменена. Осталось точек: ${draft.length}` : 'Все точки отменены'), true;
+  }
+  if (mode === 'repair') {
+    if (repair.mid.length) repair.mid.pop();
+    else if (repair.b) repair.b = undefined;
+    else if (repair.a) repair.a = undefined;
+    else return false;
+    syncRepairDraft(); msg('Последняя точка участка отменена'); return true;
+  }
+  if (mode === 'mark' && markStart) { markStart = null; draft = []; redraw(); msg('Первая точка участка отменена'); return true; }
+  return false;
+}
+function finishArea() {
+  const pts = draft.map(p => ({ lat: p.lat, lon: p.lon })); draft = [];
+  let id: number | null = null;
+  store.commit(d => { id = ops.addPolygon(d, pts, { amenity: 'parking', parking: 'surface' }); if (id !== null) store.sel = [{ type: 'way', id }]; });
+  if (id === null) { redraw(); return msg('Для парковки нужно минимум 3 разные точки'); }
+  setMode('select');
+  msg('Парковка создана. Тяните вершины или всю область; новую вершину добавляет режим «Узел» (N) кликом по контуру');
+}
 function finishDraft() {
   const pts = draft.filter((p, i) => i === 0 || !(Math.abs(p.lat - draft[i - 1].lat) < 1e-9 && Math.abs(p.lon - draft[i - 1].lon) < 1e-9));
   draft = [];
@@ -437,7 +484,7 @@ function setMode(m: Mode) {
   $('markbar').hidden = m !== 'mark'; if (m === 'mark') buildMarkControl();
   document.querySelectorAll<HTMLButtonElement>('#modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   view.setCursor(m === 'select' ? '' : 'crosshair'); redraw();
-  msg({ select: 'Выбор: клик по ребру/узлу, перетаскивание узлов выбранного ребра', node: 'Узел: клик по карте или по ребру (вставка узла-перекрёстка)', draw: 'Ребро: кликайте точки, клик по узлу/ребру присоединяет к сети', split: 'Разрезать: клик по узлу или точке на ребре', merge: 'Склейка: выберите два узла подряд', mark: curType().hint, repair: 'Участок: кликните начало и конец на линии, затем новую форму, Enter', ring: 'Кольцо: зажмите кнопку и тяните рамку от угла к углу (как эллипс в Paint). Shift — ровный круг. Просто клик — кольцо радиуса из поля «R»' }[m]);
+  msg({ select: 'Выбор: клик по ребру/узлу, перетаскивание узлов выбранного ребра', node: 'Узел: клик по карте или по ребру (вставка узла-перекрёстка)', draw: 'Ребро: кликайте точки, клик по узлу/ребру присоединяет к сети', split: 'Разрезать: клик по узлу или точке на ребре', merge: 'Склейка: выберите два узла подряд', mark: curType().hint, repair: 'Участок: кликните начало и конец на линии, затем новую форму, Enter', area: 'Парковка: кликайте углы области, Enter или двойной клик — завершить (минимум 3 точки)', ring: 'Кольцо: зажмите кнопку и тяните рамку от угла к углу (как эллипс в Paint). Shift — ровный круг. Просто клик — кольцо радиуса из поля «R»' }[m]);
 }
 
 // ---------- валидация и перерисовка ----------
@@ -647,7 +694,7 @@ $('stats').onclick = showStats;
 $('compare').onclick = toggleComparison;
 $('compareClose').onclick = () => { stopComparison(); redraw(); msg('Режим сравнения выключен'); };
 $('compareDetails').onclick = showDiffReport;
-$('undo').onclick = () => store.undo(); $('redo').onclick = () => store.redo();
+$('undo').onclick = () => { if (!undoDraftPoint()) store.undo(); }; $('redo').onclick = () => store.redo();
 document.querySelectorAll<HTMLButtonElement>('#modes button').forEach(b => (b.onclick = () => setMode(b.dataset.mode as Mode)));
 $<HTMLSelectElement>('base').onchange = e => view.setBase((e.target as HTMLSelectElement).value as Base);
 $<HTMLInputElement>('op').oninput = e => view.setOpacity(Number((e.target as HTMLInputElement).value));
@@ -669,14 +716,14 @@ window.addEventListener('drop', e => { e.preventDefault(); const f = e.dataTrans
 window.addEventListener('beforeunload', e => { if (store.dirty) e.preventDefault(); });
 
 bindHotkeys({
-  t: () => setMode('mark'), u: () => setMode('repair'), l: actions.selectLine,
+  a: () => setMode('area'), t: () => setMode('mark'), u: () => setMode('repair'), l: actions.selectLine,
   v: () => setMode('select'), n: () => setMode('node'), w: () => setMode('draw'), x: () => setMode('split'), c: () => setMode('merge'),
-  m: actions.mergeWays, r: actions.reverse, o: actions.toggleOneway, s: actions.signal, b: actions.bridge, f: actions.smooth,
-  'alt+c': actions.copyAttrs, 'alt+v': actions.pasteAttrs, delete: actions.del, backspace: actions.del, e: nextIssue,
+  m: actions.mergeWays, r: actions.reverse, o: actions.toggleOneway, s: actions.signal, p: () => actions.crossing(false), b: actions.bridge, f: actions.smooth,
+  'alt+c': actions.copyAttrs, 'alt+v': actions.pasteAttrs, delete: actions.del, backspace: () => { if (!undoDraftPoint()) actions.del(); }, e: nextIssue,
   k: cycleColorMode, '/': () => $<HTMLInputElement>('search').focus(), '.': () => $<HTMLInputElement>('search').focus(), g: () => $('legtoggle').click(), '3': () => $('b3d').click(), '?': () => $('help').click(),
-  'ctrl+z': () => store.undo(), 'ctrl+shift+z': () => store.redo(), 'ctrl+y': () => store.redo(),
+  'ctrl+z': () => { if (!undoDraftPoint()) store.undo(); }, 'ctrl+shift+z': () => store.redo(), 'ctrl+y': () => store.redo(),
   'ctrl+s': save, 'ctrl+o': () => $('open').click(),
-  enter: () => { if (mode === 'draw') finishDraft(); else if (mode === 'repair') finishRepair(); },
+  enter: () => { if (mode === 'area') finishArea(); else if (mode === 'draw') finishDraft(); else if (mode === 'repair') finishRepair(); },
   escape: () => { if (hl) pickLegend(null); draft = []; pendingMerge = null; markStart = null; repair = { mid: [] }; store.setSel([]); redraw(); },
 });
 setMode('select');

@@ -45,7 +45,7 @@ export const CLASS_CATS: ClassCat[] = [
   C('cycleway', 'Велодорожка (cycleway, пунктир)', '#2dd4bf', true),
   C('bridleway', 'Конная тропа (bridleway, пунктир)', '#d6a77a', true),
   C('steps', 'Лестница (steps, пунктир)', '#f59e0b', true),
-  C('tram', 'Трамвай (пунктир)', '#d0d0d0', true),
+  C('tram', 'Трамвайные пути (railway=tram, пунктир)', '#78716c', true),
   C('other', 'Прочее (construction и др.)', '#c49a6c'),
 ];
 const classCat = (key: string) => CLASS_CATS.find(c => c.key === key)!;
@@ -80,8 +80,11 @@ export function recommendLink(connected: string[]): string | null {
 export const PSEUDO_CLASSES: Record<string, { set: Tags; clear: string[]; cat: string }> = {
   'service:parking_aisle': { set: { highway: 'service', service: 'parking_aisle' }, clear: ['service'], cat: 'parking' },
   'footway:underpass': { set: { highway: 'footway', tunnel: 'yes', layer: '-1' }, clear: ['tunnel', 'layer'], cat: 'underpass' },
+  // трамвай: у ребра нет highway, только railway=tram; автомобильные теги убираем
+  'railway:tram': { set: { railway: 'tram', highway: '', lanes: '', 'lanes:forward': '', 'lanes:backward': '', 'turn:lanes': '', lane_markings: '', sidewalk: '', cycleway: '', service: '', junction: '' }, clear: ['railway'], cat: 'tram' },
 };
 export function hwKey(t: Tags): string {
+  if (isTram(t)) return 'railway:tram';
   if (t.highway === 'footway' && isUnderpass(t)) return 'footway:underpass';
   if (t.highway === 'service' && t.service === 'parking_aisle') return 'service:parking_aisle';
   return t.highway ?? '';
@@ -97,6 +100,7 @@ export const HIGHWAY_CLASSES: { value: string; label: string; group: string }[] 
   { value: 'footway:underpass', label: 'Подземный пешеходный переход (подземка)', group: 'Пешеходные' },
   { value: 'pedestrian', label: 'Пешеходная улица', group: 'Пешеходные' }, { value: 'footway', label: 'Пешеходная дорожка (footway)', group: 'Пешеходные' },
   { value: 'path', label: 'Тропа (path)', group: 'Пешеходные' }, { value: 'cycleway', label: 'Велодорожка (cycleway)', group: 'Пешеходные' }, { value: 'steps', label: 'Лестница (steps)', group: 'Пешеходные' },
+  { value: 'railway:tram', label: 'Трамвайные пути (railway=tram)', group: 'Рельсовые' },
 ];
 
 // ---------- полосы ----------
