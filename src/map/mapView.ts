@@ -9,7 +9,50 @@ import type { ColorMode } from '../core/roadStyle.ts';
 import { buildCompareFeatures, graphWay } from '../core/compareMap.ts';
 import type { DiffReport } from '../core/diff.ts';
 
-export interface ClickInfo { lng: number; lat: number; nodeId?: number; wayId?: number; areaId?: number; edgeId?: number; shift: boolean; ctrl: boolean }
+export function drawBusStopIcon(g: CanvasRenderingContext2D) {
+  // Синий квадрат со скруглёнными углами
+  g.beginPath();
+  g.roundRect(1, 1, 26, 26, 5);
+  g.fillStyle = '#1677D2';
+  g.fill();
+
+  g.lineWidth = 1.5;
+  g.strokeStyle = '#ffffff';
+  g.stroke();
+
+  // Белый корпус автобуса
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  g.roundRect(7, 5, 14, 17, 3);
+  g.fill();
+
+  // Окно
+  g.fillStyle = '#1677D2';
+  g.fillRect(9, 7, 10, 5);
+
+  // Нижняя часть автобуса
+  g.fillStyle = '#1677D2';
+  g.fillRect(9, 14, 10, 4);
+
+  // Колёса
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  g.arc(9, 23, 2, 0, Math.PI * 2);
+  g.arc(19, 23, 2, 0, Math.PI * 2);
+  g.fill();
+}
+
+export interface ClickInfo {
+  lng: number;
+  lat: number;
+  nodeId?: number;
+  wayId?: number;
+  buildingId?: number;
+  areaId?: number;
+  edgeId?: number;
+  shift: boolean;
+  ctrl: boolean;
+}
 export interface Handlers {
   onClick(e: ClickInfo): void;
   onDblClick(): void;
@@ -130,6 +173,7 @@ export class MapView {
     });
     icon('cr', 24, 24, g => zebra(g, false));
     icon('cr-sig', 24, 24, g => zebra(g, true));
+    icon('busstop', 28, 28, drawBusStopIcon);
 
     for (const s of ['ug', 'parking', 'buildings', 'roads', 'nodes', 'issues', 'draft', 'draftpts', 'compare-roads', 'compare-nodes']) m.addSource(s, { type: 'geojson', data: EMPTY as any, ...(['roads', 'nodes', 'parking', 'compare-roads', 'compare-nodes'].includes(s) ? { promoteId: 'id' } : {}) });
 
@@ -137,14 +181,83 @@ export class MapView {
     m.addLayer({ id: 'parking-line', type: 'line', source: 'parking', paint: { 'line-color': '#a21caf', 'line-width': 1.5, 'line-dasharray': [3, 2] } });
     m.addLayer({ id: 'parking-sel', type: 'line', source: 'parking', filter: ['==', ['get', 'sel'], 1], layout: { 'line-join': 'round' }, paint: { 'line-color': '#00e5ff', 'line-width': 4, 'line-opacity': 0.95 } });
     m.addLayer({ id: 'buildings', type: 'fill-extrusion', source: 'buildings', paint: { 'fill-extrusion-color': '#b9b3a8', 'fill-extrusion-height': ['get', 'h'], 'fill-extrusion-opacity': 0 } });
+    // Контуры зданий на 2D-карте
+    m.addLayer({
+      id: 'building-footprints',
+      type: 'fill',
+      source: 'buildings',
+      paint: {
+        'fill-color': '#9ca3af',
+        'fill-opacity': 0.28
+      }
+    });
+
+    m.addLayer({
+      id: 'building-outlines',
+      type: 'line',
+      source: 'buildings',
+      paint: {
+        'line-color': [
+          'case',
+          ['==', ['get', 'sel'], 1],
+          '#a855f7',
+          '#777777'
+        ],
+        'line-width': [
+          'case',
+          ['==', ['get', 'sel'], 1],
+          3,
+          1
+        ]
+      }
+    });
     // ширина линии: zoom-выражение должно быть верхнего уровня, поэтому смещение вшито внутрь
     const lw = (off: number): any => ['interpolate', ['linear'], ['zoom'], 12, ['+', ['max', 1, ['/', ['get', 'lw'], 3]], off], 18, ['+', ['get', 'lw'], off]];
     m.addLayer({ id: 'roads-sel', type: 'line', source: 'roads', filter: ['==', ['get', 'sel'], 1], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#00e5ff', 'line-opacity': 0.9, 'line-width': lw(8) } });
     // подземка: тёмная широкая подсветка под линией, чтобы не путать с обычным тротуаром
     m.addLayer({ id: 'roads-ug-halo', type: 'line', source: 'roads', filter: ['==', ['get', 'ug'], 1], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#2e1065', 'line-opacity': ['case', ['==', ['get', 'dim'], 1], 0.12, 0.6], 'line-width': lw(9) } });
     m.addLayer({ id: 'roads-case', type: 'line', source: 'roads', layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#111', 'line-opacity': ['case', ['==', ['get', 'dim'], 1], 0.1, 0.65], 'line-width': lw(2) } });
-    m.addLayer({ id: 'roads', type: 'line', source: 'roads', filter: ['==', ['get', 'dash'], 0], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'col'], 'line-opacity': ['case', ['==', ['get', 'dim'], 1], 0.15, 1], 'line-width': lw(0) } });
-    m.addLayer({ id: 'roads-dash', type: 'line', source: 'roads', filter: ['==', ['get', 'dash'], 1], layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': ['get', 'col'], 'line-opacity': ['case', ['==', ['get', 'dim'], 1], 0.15, 1], 'line-width': lw(0), 'line-dasharray': [2, 1.5] } });
+    m.addLayer({ id: 'roads', type: 'line', source: 'roads', filter: ['all',['==', ['get', 'dash'], 0],['==', ['get', 'rail'], 0]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'col'], 'line-opacity': ['case', ['==', ['get', 'dim'], 1], 0.15, 1], 'line-width': lw(0) } });
+    m.addLayer({ id: 'roads-dash', type: 'line', source: 'roads', filter: ['all',['==', ['get', 'dash'], 1],['==', ['get', 'rail'], 0]], layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': ['get', 'col'], 'line-opacity': ['case', ['==', ['get', 'dim'], 1], 0.15, 1], 'line-width': lw(0), 'line-dasharray': [2, 1.5] } });
+    // Основа железнодорожного полотна
+    m.addLayer({
+      id: 'railway-base',
+      type: 'line',
+      source: 'roads',
+      filter: ['==', ['get', 'rail'], 1],
+      layout: {
+        'line-cap': 'butt',
+        'line-join': 'round'
+      },
+      paint: {
+        'line-color': '#3f4650',
+        'line-width': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          10, 2,
+          16, 5,
+          19, 7
+        ]
+      }
+    });
+
+    // Светлая штриховая линия поверх полотна
+    m.addLayer({
+      id: 'railway-center',
+      type: 'line',
+      source: 'roads',
+      filter: ['==', ['get', 'rail'], 1],
+      layout: {
+        'line-cap': 'butt',
+        'line-join': 'round'
+      },
+      paint: {
+        'line-color': '#e5e7eb',
+        'line-width': 1.5,
+        'line-dasharray': [2, 2]
+      }
+    });
     m.addLayer({ id: 'roads-bridge', type: 'line', source: 'roads', filter: ['==', ['get', 'bridge'], 1], paint: { 'line-color': '#2b6cff', 'line-width': 2, 'line-offset': 0 } });
     m.addLayer({ id: 'roads-bad', type: 'line', source: 'roads', filter: ['==', ['get', 'bad'], 1], paint: { 'line-color': '#ff2d2d', 'line-width': 3, 'line-dasharray': [1.5, 1.5] } });
     m.addLayer({
@@ -154,7 +267,7 @@ export class MapView {
     const nodePaint: any = {
       'circle-radius': ['case', ['==', ['get', 'sel'], 1], 8, ['!=', ['get', 'mk'], ''], 7, ['==', ['get', 'wsel'], 1], 5, 3.5],
       'circle-color': ['case', ['==', ['get', 'sel'], 1], '#00e5ff',
-        ['==', ['get', 'mk'], 'give_way'], '#ffffff', ['==', ['get', 'mk'], 'stop'], '#d62828',
+        ['==', ['get', 'mk'], 'give_way'], '#ffffff', ['==', ['get', 'mk'], 'stop'], '#d62828', 
         ['==', ['get', 'wsel'], 1], '#ffffff', '#555'],
       'circle-stroke-width': ['case', ['==', ['get', 'mk'], 'give_way'], 3, ['==', ['get', 'wsel'], 1], 2, 1],
       'circle-stroke-color': ['case', ['==', ['get', 'mk'], 'give_way'], '#d62828', ['==', ['get', 'wsel'], 1], '#1b4dff', '#fff'],
@@ -206,7 +319,13 @@ export class MapView {
       .find(f => f.properties!.status !== 'removed');
   }
   private hitCurrentWays(p: maplibregl.Point, r: number, hit: (p: maplibregl.Point, layers: string[], r: number) => HitFeature[]) {
-    return hit(p, this.comparison ? ['compare-roads'] : ['roads', 'roads-dash'], r)
+    return hit(
+      p,
+      this.comparison
+        ? ['compare-roads']
+        : ['roads', 'roads-dash', 'railway-base'],
+      r
+    )
       .find(f => f.properties!.status !== 'removed');
   }
 
@@ -218,7 +337,24 @@ export class MapView {
       if (this.suppressClick || !this.loaded) return;
       const n = this.hitCurrentNodes(e.point, 9, hit), r = this.hitCurrentWays(e.point, 8, hit);
       const ar = this.comparison ? undefined : hit(e.point, ['parking-fill'], 0)[0], ed = this.comparison ? undefined : hit(e.point, ['parking-line'], 8)[0];
-      this.h.onClick({ lng: e.lngLat.lng, lat: e.lngLat.lat, nodeId: n ? Number(n.properties!.id) : undefined, wayId: r ? Number(r.properties!.id) : undefined, areaId: ar ? Number(ar.properties!.id) : undefined, edgeId: ed ? Number(ed.properties!.id) : undefined, shift: e.originalEvent.shiftKey, ctrl: e.originalEvent.ctrlKey || e.originalEvent.metaKey });
+      const building = this.comparison
+        ? undefined
+        : hit(e.point, ['building-footprints', 'building-outlines'], 0)[0];
+
+      const buildingId = building
+        ? Number(building.properties?.id)
+        : undefined;
+      this.h.onClick({
+        lng: e.lngLat.lng,
+        lat: e.lngLat.lat,
+        nodeId: n ? Number(n.properties!.id) : undefined,
+        wayId: r ? Number(r.properties!.id) : undefined,
+        buildingId: Number.isFinite(buildingId) ? buildingId : undefined,
+        areaId: ar ? Number(ar.properties!.id) : undefined,
+        edgeId: ed ? Number(ed.properties!.id) : undefined,
+        shift: e.originalEvent.shiftKey,
+        ctrl: e.originalEvent.ctrlKey || e.originalEvent.metaKey
+      });
     });
     m.on('dblclick', () => this.h.onDblClick());
     // Shift+клик в MapLibre по умолчанию запускает zoom-рамку и подавляет click: из-за этого множественное выделение не работало.
@@ -236,8 +372,27 @@ export class MapView {
       const n = this.hitCurrentNodes(e.point, 8, hit);
       if (!n) { // перетаскивание выбранной области (парковки) целиком; если под курсором дорога, дорога важнее
         if (this.comparison || this.hitCurrentWays(e.point, 6, hit)) return;
-        const ar = hit(e.point, ['parking-fill'], 0)[0], aid = ar ? Number(ar.properties!.id) : NaN;
-        if (aid && this.h.areaDragAllowed?.(aid)) { e.preventDefault(); this.areaDrag = { id: aid, lat: e.lngLat.lat, lng: e.lngLat.lng }; m.dragPan.disable(); this.h.onAreaStart?.(); m.getCanvas().style.cursor = 'grabbing'; }
+        const ar = hit(
+          e.point,
+          ['parking-fill', 'building-footprints', 'building-outlines'],
+          0
+        )[0];
+
+        const aid = ar ? Number(ar.properties!.id) : NaN;
+
+        if (Number.isFinite(aid) && this.h.areaDragAllowed?.(aid)) {
+          e.preventDefault();
+
+          this.areaDrag = {
+            id: aid,
+            lat: e.lngLat.lat,
+            lng: e.lngLat.lng
+          };
+
+          m.dragPan.disable();
+          this.h.onAreaStart?.();
+          m.getCanvas().style.cursor = 'grabbing';
+        }
         return;
       }
       const id = Number(n.properties!.id);
@@ -276,7 +431,7 @@ export class MapView {
         const x0 = Math.min(b.x, e.point.x), y0 = Math.min(b.y, e.point.y), x1 = Math.max(b.x, e.point.x), y1 = Math.max(b.y, e.point.y);
         if (x1 - x0 + (y1 - y0) > 6) {
           const q = (layers: string[]) => m.queryRenderedFeatures([[x0, y0], [x1, y1]], { layers: layers.filter(l => m.getLayer(l)) });
-          const ways = [...new Set(q(this.comparison ? ['compare-roads'] : ['roads', 'roads-dash'])
+          const ways = [...new Set(q(this.comparison ? ['compare-roads'] : ['roads', 'roads-dash', 'railway-base'])
             .filter(f => f.properties!.status !== 'removed').map(f => Number(f.properties!.id)))];
           const nodes = ways.length ? [] : [...new Set(q(this.comparison ? ['compare-changed-nodes', 'compare-unchanged-nodes'] : ['nodes-ic', 'nodes-sel', 'nodes'])
             .filter(f => f.properties!.status !== 'removed').map(f => Number(f.properties!.id)))];
@@ -320,8 +475,22 @@ export class MapView {
       const t = w.tags;
       const coords = w.nodes.map(id => doc.nodes.get(id)).filter(Boolean).map(n => [n!.lon, n!.lat]);
       if (t.building && coords.length > 3) {
-        const h = parseFloat(t.height) || (parseFloat(t['building:levels']) || 3) * 3;
-        blds.push({ type: 'Feature', properties: { h }, geometry: { type: 'Polygon', coordinates: [coords] } });
+        const h = parseFloat(t.height) ||
+          (parseFloat(t['building:levels']) || 3) * 3;
+
+        blds.push({
+          type: 'Feature',
+          properties: {
+            id: w.id,
+            h,
+            sel: selWays.has(w.id) ? 1 : 0
+          },
+          geometry: {
+            type: 'Polygon',
+            coordinates: [coords]
+          }
+        });
+
         continue;
       }
       if (t.amenity === 'parking' && coords.length > 3) {
@@ -330,7 +499,7 @@ export class MapView {
         for (const id of new Set(w.nodes)) { const l = parkIndex.get(id) ?? []; l.push(w.id); parkIndex.set(id, l); }
         continue;
       }
-      if (!(t.highway || t.railway === 'tram') || coords.length < 2) continue;
+      if (!(t.highway || t.railway) || coords.length < 2) continue;
       for (const id of new Set(w.nodes)) {
         const links = roadIndex.get(id) ?? []; links.push(w.id); roadIndex.set(id, links);
       }
@@ -338,7 +507,7 @@ export class MapView {
       roads.push({
         type: 'Feature',
         properties: {
-          id: w.id, hw: t.highway ?? 'tram', dir, col: cat.color, dash: cat.dash ? 1 : 0, lw: lineWidth(t), ug: isUnderpass(t) ? 1 : 0,
+          id: w.id, hw: t.highway ?? 'tram', rail: t.railway ? 1 : 0, dir, col: cat.color, dash: cat.dash ? 1 : 0, lw: lineWidth(t), ug: isUnderpass(t) ? 1 : 0,
           sel: selWays.has(w.id) ? 1 : 0, dim: this.hl && cat.key !== this.hl ? 1 : 0, bad: badWays.has(w.id) ? 1 : 0, bridge: t.bridge && t.bridge !== 'no' ? 1 : 0,
         },
         geometry: { type: 'LineString', coordinates: coords },
@@ -351,12 +520,53 @@ export class MapView {
     for (const [id, c] of usage) if (c > 1) show.add(id);
     for (const id of inSel) show.add(id); // вершины выбранных тротуаров/трамвая/парковок (раньше терялись: цикл шёл только по узлам дорог)
     const MK = ['crossing', 'give_way', 'stop'], junc = junctionNodes(doc);
-    for (const n of doc.nodes.values()) if (n.tags.highway === 'traffic_signals' || MK.includes(n.tags.highway) || selNodes.has(n.id)) show.add(n.id);
-    const iconOf = (t: Record<string, string>, id: number) =>
-      t.highway === 'traffic_signals' ? (junc.has(id) ? 'tl' : 'tl-warn')
-        : t.highway === 'crossing' ? (t.crossing === 'traffic_signals' || t['crossing:signals'] === 'yes' ? 'cr-sig' : 'cr') : '';
+    for (const n of doc.nodes.values()) {
+      if (
+        n.tags.highway === 'traffic_signals' ||
+        n.tags.highway === 'bus_stop' ||
+        n.tags.public_transport === 'platform' ||
+        MK.includes(n.tags.highway) ||
+        selNodes.has(n.id)
+      ) {
+        show.add(n.id);
+      }
+    }
+    const iconOf = (t: Record<string, string>, id: number) => {
+      if (t.highway === 'traffic_signals') {
+        return junc.has(id) ? 'tl' : 'tl-warn';
+      }
+
+      if (t.highway === 'crossing') {
+        return (
+          t.crossing === 'traffic_signals' ||
+          t['crossing:signals'] === 'yes'
+        ) ? 'cr-sig' : 'cr';
+      }
+
+      if (
+        t.highway === 'bus_stop' ||
+        (t.public_transport === 'platform' && t.bus === 'yes')
+      ) {
+        return 'busstop';
+      }
+
+      return '';
+    };
     const nodes = [...show].map(id => doc.nodes.get(id)).filter(Boolean).map(n => ({
-      type: 'Feature', properties: { id: n!.id, mk: n!.tags.highway === 'give_way' || n!.tags.highway === 'stop' ? n!.tags.highway : '', ic: iconOf(n!.tags, n!.id), sel: selNodes.has(n!.id) ? 1 : 0, wsel: inSel.has(n!.id) ? 1 : 0 },
+      type: 'Feature', 
+      properties: {
+        id: n!.id,
+        mk: n!.tags.highway === 'give_way' ||
+            n!.tags.highway === 'stop'
+              ? n!.tags.highway
+              : (n!.tags.highway === 'bus_stop' ||
+                n!.tags.public_transport === 'platform')
+                ? 'busstop'
+                : '',
+        ic: iconOf(n!.tags, n!.id),
+        sel: selNodes.has(n!.id) ? 1 : 0,
+        wsel: inSel.has(n!.id) ? 1 : 0
+      },
       geometry: { type: 'Point', coordinates: [n!.lon, n!.lat] },
     }));
     this.roadsByNode = roadIndex; this.parkByNode = parkIndex; this.visibleNodes = show;

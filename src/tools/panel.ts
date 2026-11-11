@@ -187,9 +187,36 @@ export function renderProps(el: HTMLElement, store: Store, a: PanelActions, issu
     el.insertAdjacentHTML('beforeend', '<div class="hint">Тяните вершины, чтобы изменить форму, или потяните за заливку, чтобы сдвинуть всю парковку. Новая вершина: режим «Узел» (N), клик по контуру. Удалить вершину: выбрать её и Delete.</div>');
     el.appendChild(selectRow('Тип парковки', [['', '— не задано —'], ['surface', 'Наземная'], ['multi-storey', 'Многоуровневая'], ['underground', 'Подземная'], ['street_side', 'Вдоль улицы']], w.tags.parking ?? '', v => store.commit(d => ops.setTag(d.ways.get(w.id)!, 'parking', v))));
     el.appendChild(tagTable(w.tags, (k, v) => store.commit(d => ops.setTag(d.ways.get(w.id)!, k, v))));
-  } else if (ways.length === 1 && !nodes.length) {
-    const w = doc.ways.get(ways[0])!;
-    h.textContent = `${w.tags.name ? w.tags.name + ' · ' : ''}Ребро #${w.id} · узлов: ${w.nodes.length} · ${onewayDir(w.tags) ? 'одностороннее' : 'двустороннее'}`;
+    } else if (
+      ways.length === 1 &&
+      !nodes.length &&
+      !!doc.ways.get(ways[0])?.tags.building
+    ) {
+      // СВОЙСТВА ЗДАНИЯ
+      const w = doc.ways.get(ways[0])!;
+
+      h.textContent = `${w.tags.name ? w.tags.name + ' · ' : 'Здание · '}#${w.id} · вершин: ${w.nodes.length}`;
+
+      const b = document.createElement('div');
+      b.className = 'btns';
+      b.append(btn('Удалить', a.del));
+      el.appendChild(b);
+
+      el.insertAdjacentHTML(
+        'beforeend',
+        '<div class="hint">Свойства здания. Можно редактировать существующие теги, добавлять новые и удалять ненужные. Для изменения формы перемещайте вершины здания.</div>'
+      );
+
+      el.appendChild(
+        tagTable(w.tags, (k, v) =>
+          store.commit(d => ops.setTag(d.ways.get(w.id)!, k, v))
+        )
+      );
+
+    } else if (ways.length === 1 && !nodes.length) {
+      // ОБЫЧНОЕ РЕБРО / ДОРОГА
+      const w = doc.ways.get(ways[0])!;
+      h.textContent = `${w.tags.name ? w.tags.name + ' · ' : ''}Ребро #${w.id} · узлов: ${w.nodes.length} · ${onewayDir(w.tags) ? 'одностороннее' : 'двустороннее'}`;
     const b = document.createElement('div'); b.className = 'btns';
     b.append(btn('Копировать характеристики (Alt+C)', a.copyAttrs, 'Запомнить highway, oneway, lanes, maxspeed, surface и др.'), ...(a.hasCopy() ? [btn('Вставить (Alt+V)', a.pasteAttrs)] : []), btn('Развернуть (R)', a.reverse), btn('Oneway (O)', a.toggleOneway), btn('Мост (B)', a.bridge), btn('Высота ele (F)', a.smooth), btn('Удалить', a.del));
     el.appendChild(b);

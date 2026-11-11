@@ -4,6 +4,8 @@ import { Store } from './core/store.ts';
 import { diffDocs, changeTitle } from './core/diff.ts';
 import { parseOsm, serializeOsm, onewayDir } from './core/osm.ts';
 import { dist, ellipsePoints, shapeFromCorners } from './core/geo.ts';
+import { lineCrossesBuilding } from './core/obstacles.ts';
+import { validateBuildingPlacement } from './core/buildingPlacement.ts';
 import { normalizePeak, PEAK_TAG, PEAK_PRESETS } from './core/peak.ts';
 import type { Issue } from './core/types.ts';
 import { MapView } from './map/mapView.ts';
@@ -22,8 +24,20 @@ import { renderProps, renderIssues, filterIssues, issuesFor, KIND_RU } from './t
 import type { IssueFilter } from './tools/panel.ts';
 import type { PanelActions } from './tools/panel.ts';
 import { validate, countBy } from './validator/validate.ts';
+import { drawBusStopIcon } from './map/mapView.ts';
 
-type Mode = 'select' | 'node' | 'draw' | 'split' | 'merge' | 'mark' | 'repair' | 'ring' | 'area';
+type Mode =
+  | 'select'
+  | 'node'
+  | 'draw'
+  | 'split'
+  | 'merge'
+  | 'mark'
+  | 'repair'
+  | 'ring'
+  | 'area'
+  | 'busstop'
+  | 'building';
 interface DraftPt { lat: number; lon: number; nodeId?: number; wayId?: number }
 
 const isArea = (t: Record<string, string>) => t.amenity === 'parking' && !t.highway;
@@ -345,7 +359,12 @@ function createRoundabout(lat: number, lon: number, rx: number, ry: number) {
 // ---------- карта ----------
 const view = new MapView('map', {
   onClick: handleClick,
-  onDblClick: () => { if (mode === 'area') finishArea(); else if (mode === 'draw') finishDraft(); else if (mode === 'repair') finishRepair(); },
+  onDblClick: () => {
+    if (mode === 'area') finishArea();
+    else if (mode === 'building') finishBuilding();
+    else if (mode === 'draw') finishDraft();
+    else if (mode === 'repair') finishRepair();
+  },
   dragAllowed: id => mode === 'select' && (store.selNodes().includes(id) || store.selWays().some(w => store.doc.ways.get(w)?.nodes.includes(id))),
   onDragStart: () => { store.dragging = true; store.checkpoint(); },
   onDrag: (id, lat, lon) => {
@@ -366,14 +385,128 @@ const view = new MapView('map', {
   },
   onDragEnd: id => {
     const node = store.doc.nodes.get(id);
-    // Разово обновить OSM action=modify у узла и связанных дорог.
-    if (node) ops.moveNode(store.doc, id, node.lat, node.lon);
-    store.dragging = false; store.notify(); msg('Узел перемещён');
+
+    if (!node) {
+      store.dragging = false;
+      return;
+    }
+
+    // Ищем здания, которым принадлежит перемещённая вершина.
+    const affectedBuildings = [...store.doc.ways.values()]
+      .filter(w =>
+        w.tags.building &&
+        w.tags.building !== 'no' &&
+        w.nodes.includes(id)
+      );
+
+    // Проверяем каждый изменённый контур.
+    for (const building of affectedBuildings) {
+      const points = building.nodes
+        .map(nodeId => store.doc.nodes.get(nodeId))
+        .filter((n): n is NonNullable<typeof n> => !!n)
+        .map(n => ({
+          lat: n.lat,
+          lon: n.lon
+        }));
+
+      const error = validateBuildingPlacement(
+        store.doc,
+        points,
+        building.id
+      );
+
+      if (error) {
+        // checkpoint был создан в onDragStart,
+        // поэтому undo возвращает исходные координаты.
+        store.undo();
+
+        store.dragging = false;
+        msg(`Перемещение отменено: ${error}`);
+        return;
+      }
+    }
+
+    ops.moveNode(store.doc, id, node.lat, node.lon);
+
+    store.dragging = false;
+    store.notify();
+
+    msg('Узел перемещён');
   },
-  areaDragAllowed: id => mode === 'select' && store.selWays().includes(id) && isArea(store.doc.ways.get(id)?.tags ?? {}),
+  areaDragAllowed: id => {
+    if (mode !== 'select' || !store.selWays().includes(id)) {
+      return false;
+    }
+
+    const tags = store.doc.ways.get(id)?.tags ?? {};
+
+    const isBuilding =
+      !!tags.building &&
+      tags.building !== 'no';
+
+    return isArea(tags) || isBuilding;
+  },
   onAreaStart: () => { store.dragging = true; store.checkpoint(); },
-  onAreaMove: (id, dLat, dLon) => { ops.moveWayBy(store.doc, id, dLat, dLon); store.notify(); },
-  onAreaEnd: () => { store.dragging = false; store.notify(); msg('Область перемещена'); },
+  onAreaMove: (id, dLat, dLon) => {
+    const way = store.doc.ways.get(id);
+
+    if (!way) return;
+
+    const isBuilding =
+      !!way.tags.building &&
+      way.tags.building !== 'no';
+
+    // Парковки перемещаются по старой логике.
+    if (!isBuilding) {
+      ops.moveWayBy(store.doc, id, dLat, dLon);
+      store.notify();
+      return;
+    }
+
+    // Сначала пробуем переместить здание.
+    ops.moveWayBy(store.doc, id, dLat, dLon);
+
+    const points = way.nodes
+      .map(nodeId => store.doc.nodes.get(nodeId))
+      .filter((n): n is NonNullable<typeof n> => !!n)
+      .map(n => ({
+        lat: n.lat,
+        lon: n.lon
+      }));
+
+    // Проверяем новое положение, исключая само здание.
+    const error = validateBuildingPlacement(
+      store.doc,
+      points,
+      id
+    );
+
+    if (error) {
+      // Если положение недопустимо, отменяем только
+      // последнее перемещение, а не весь drag.
+      ops.moveWayBy(store.doc, id, -dLat, -dLon);
+
+      msg(`Перемещение остановлено: ${error}`);
+      return;
+    }
+
+    store.notify();
+  },
+  onAreaEnd: () => {
+    store.dragging = false;
+    store.notify();
+
+    const selectedBuilding = store.selWays().some(id => {
+      const tags = store.doc.ways.get(id)?.tags ?? {};
+      return !!tags.building && tags.building !== 'no';
+    });
+
+    msg(
+      selectedBuilding
+        ? 'Здание перемещено'
+        : 'Область перемещена'
+    );
+  },
   boxAllowed: () => mode === 'select',
   onBox: (ways, nodes, additive) => {
     const picked = [...ways.map(id => ({ type: 'way' as const, id })), ...nodes.map(id => ({ type: 'node' as const, id }))].filter(p => (p.type === 'way' ? store.doc.ways : store.doc.nodes).has(p.id));
@@ -384,6 +517,12 @@ const view = new MapView('map', {
 });
 
 function handleClick(e: ClickInfo) {
+  if (e.buildingId !== undefined) {
+    store.setSel([
+      { type: 'way', id: e.buildingId }
+    ]);
+    return;
+  }
   const doc = store.doc;
   switch (mode) {
     case 'select': {
@@ -403,6 +542,29 @@ function handleClick(e: ClickInfo) {
         store.sel = [{ type: 'node', id }];
       });
       break;
+    case 'busstop': {
+      let id = 0;
+
+      store.commit(d => {
+        id =
+          e.nodeId ??
+          (e.wayId !== undefined
+            ? ops.nodeOnWayAt(d, e.wayId, e.lat, e.lng)
+            : null) ??
+          ops.addNode(d, e.lat, e.lng);
+
+        const n = d.nodes.get(id)!;
+
+        n.tags.highway = 'bus_stop';
+        n.tags.public_transport = 'platform';
+        n.tags.bus = 'yes';
+
+        store.sel = [{ type: 'node', id }];
+      });
+
+      msg('Остановка общественного транспорта создана');
+      break;
+    }
     case 'draw': {
       const n = e.nodeId !== undefined ? doc.nodes.get(e.nodeId) : undefined;
       draft.push({ lat: n?.lat ?? e.lat, lon: n?.lon ?? e.lng, nodeId: e.nodeId, wayId: e.nodeId === undefined ? e.wayId : undefined });
@@ -435,15 +597,40 @@ function handleClick(e: ClickInfo) {
         msg(store.tryCommit(d => ops.mergeNodes(d, keep, rem)) ?? 'Узлы склеены');
       }
       break;
+    case 'building':
+      draft.push({
+        lat: e.lat,
+        lon: e.lng
+      });
+
+      redraw();
+
+      msg(
+        `Здание: добавлено вершин ${draft.length}. Enter — завершить, Backspace — отменить последнюю вершину`
+      );
+
+      break;
   }
 }
 
 /** Отменить последнюю поставленную точку незавершённого построения (ребро, парковка, участок, метка). true — было что отменять. */
 function undoDraftPoint(): boolean {
-  if (mode === 'draw' || mode === 'area') {
+  if (mode === 'draw' || mode === 'area' || mode === 'building') {
     if (!draft.length) return false;
-    draft.pop(); redraw();
-    return msg(draft.length ? `Последняя точка отменена. Осталось точек: ${draft.length}` : 'Все точки отменены'), true;
+
+    const removed = draft.pop();
+
+    redraw();
+
+    if (mode === 'draw') {
+      msg(`Последний узел ребра отменён. Осталось точек: ${draft.length}`);
+    } else if (mode === 'building') {
+      msg(`Последняя вершина здания отменена. Осталось точек: ${draft.length}`);
+    } else {
+      msg(`Последняя точка отменена. Осталось точек: ${draft.length}`);
+    }
+
+    return true;
   }
   if (mode === 'repair') {
     if (repair.mid.length) repair.mid.pop();
@@ -463,11 +650,99 @@ function finishArea() {
   setMode('select');
   msg('Парковка создана. Тяните вершины или всю область; новую вершину добавляет режим «Узел» (N) кликом по контуру');
 }
+
+function finishBuilding() {
+  const pts = draft.map(p => ({
+    lat: p.lat,
+    lon: p.lon
+  }));
+
+  if (pts.length < 3) {
+    return msg('Для здания необходимо минимум 3 вершины');
+  }
+
+  const rawHeight = prompt(
+    'Введите высоту здания в метрах:',
+    '9'
+  );
+
+  if (rawHeight === null) return;
+
+  const height = Number(rawHeight);
+
+  if (!Number.isFinite(height) || height <= 0 || height > 500) {
+    return msg('Высота должна быть числом от 0 до 500 метров');
+  }
+
+  const placementError = validateBuildingPlacement(
+  store.doc,
+  pts
+);
+
+if (placementError) {
+  return msg(placementError);
+}
+
+  let id: number | null = null;
+
+  store.commit(d => {
+    id = ops.addPolygon(
+      d,
+      pts,
+      {
+        building: 'yes',
+        height: String(height)
+      }
+    );
+
+    if (id !== null) {
+      store.sel = [
+        {
+          type: 'way',
+          id
+        }
+      ];
+    }
+  });
+
+  draft = [];
+
+  if (id === null) {
+    redraw();
+    return msg('Не удалось создать здание');
+  }
+
+  setMode('select');
+
+  msg(
+    `Здание создано. Высота: ${height} м`
+  );
+}
 function finishDraft() {
-  const pts = draft.filter((p, i) => i === 0 || !(Math.abs(p.lat - draft[i - 1].lat) < 1e-9 && Math.abs(p.lon - draft[i - 1].lon) < 1e-9));
+  const pts = draft.filter(
+    (p, i) =>
+      i === 0 ||
+      !(
+        Math.abs(p.lat - draft[i - 1].lat) < 1e-9 &&
+        Math.abs(p.lon - draft[i - 1].lon) < 1e-9
+      )
+  );
+
+  const tags = ops.templateTags($<HTMLSelectElement>('tpl').value);
+
+  // Проверяем автомобильные и железнодорожные линии
+  if (
+    (tags.highway || tags.railway) &&
+    lineCrossesBuilding(store.doc, pts)
+  ) {
+    redraw();
+    return msg(
+      'Нельзя проложить дорогу через здание. Измените траекторию.'
+    );
+  }
+
   draft = [];
   if (pts.length < 2) { redraw(); return; }
-  const tags = ops.templateTags($<HTMLSelectElement>('tpl').value);
   store.commit(d => {
     const raw = pts.map(p => p.nodeId ?? (p.wayId !== undefined ? ops.nodeOnWayAt(d, p.wayId, p.lat, p.lon) : null) ?? ops.addNode(d, p.lat, p.lon));
     const ids = raw.filter((x, i) => i === 0 || x !== raw[i - 1]);
@@ -484,7 +759,57 @@ function setMode(m: Mode) {
   $('markbar').hidden = m !== 'mark'; if (m === 'mark') buildMarkControl();
   document.querySelectorAll<HTMLButtonElement>('#modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   view.setCursor(m === 'select' ? '' : 'crosshair'); redraw();
-  msg({ select: 'Выбор: клик по ребру/узлу, перетаскивание узлов выбранного ребра', node: 'Узел: клик по карте или по ребру (вставка узла-перекрёстка)', draw: 'Ребро: кликайте точки, клик по узлу/ребру присоединяет к сети', split: 'Разрезать: клик по узлу или точке на ребре', merge: 'Склейка: выберите два узла подряд', mark: curType().hint, repair: 'Участок: кликните начало и конец на линии, затем новую форму, Enter', area: 'Парковка: кликайте углы области, Enter или двойной клик — завершить (минимум 3 точки)', ring: 'Кольцо: зажмите кнопку и тяните рамку от угла к углу (как эллипс в Paint). Shift — ровный круг. Просто клик — кольцо радиуса из поля «R»' }[m]);
+  msg({ select: 'Выбор: клик по ребру/узлу, перетаскивание узлов выбранного ребра', node: 'Узел: клик по карте или по ребру (вставка узла-перекрёстка)', busstop: 'Остановка ОТ: кликните по карте или по дороге, чтобы разместить остановку', building: 'Здание: кликайте по карте, чтобы задать углы здания. Enter — завершить', draw: 'Ребро: кликайте точки, клик по узлу/ребру присоединяет к сети', split: 'Разрезать: клик по узлу или точке на ребре', merge: 'Склейка: выберите два узла подряд', mark: curType().hint, repair: 'Участок: кликните начало и конец на линии, затем новую форму, Enter', area: 'Парковка: кликайте углы области, Enter или двойной клик — завершить (минимум 3 точки)', ring: 'Кольцо: зажмите кнопку и тяните рамку от угла к углу (как эллипс в Paint). Shift — ровный круг. Просто клик — кольцо радиуса из поля «R»' }[m]);
+}
+
+function addBusStopLegend() {
+  const legend = $('legend');
+
+  // Не добавляем повторно при каждой перерисовке
+  if (legend.querySelector('[data-legend-busstop]')) return;
+
+  const item = document.createElement('div');
+  item.dataset.legendBusstop = 'true';
+
+  item.style.display = 'flex';
+  item.style.alignItems = 'center';
+  item.style.gap = '7px';
+  item.style.marginTop = '5px';
+  item.style.width = '100%';
+  item.style.boxSizing = 'border-box';
+
+  // Иконка остановки
+  const canvas = document.createElement('canvas');
+  canvas.width = 80;
+  canvas.height = 80;
+
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(2, 2);
+  drawBusStopIcon(ctx);
+
+  const icon = document.createElement('img');
+  icon.src = canvas.toDataURL();
+  icon.style.width = '28px';
+  icon.style.height = '28px';
+
+  // Название
+  const label = document.createElement('span');
+  label.textContent = 'Автобусная остановка';
+
+  // Количество справа
+  const count = document.createElement('span');
+
+  const busStopsCount = [...store.doc.nodes.values()].filter(
+    n => n.tags.highway === 'bus_stop'
+  ).length;
+
+  count.textContent = String(busStopsCount);
+  count.style.marginLeft = 'auto';
+  count.style.fontWeight = '';
+  count.style.textAlign = 'right';
+
+  item.append(icon, label, count);
+  legend.appendChild(item);
 }
 
 // ---------- валидация и перерисовка ----------
@@ -649,6 +974,45 @@ function showDiffReport() {
   $<HTMLDialogElement>('diffDlg').showModal();
 }
 
+function closeDropdowns(except?: HTMLElement | null) {
+  document.querySelectorAll<HTMLDetailsElement>('details[open]')
+    .forEach(menu => {
+      if (except && menu.contains(except)) return;
+      menu.open = false;
+    });
+}
+document.addEventListener('click', e => {
+  const target = e.target as HTMLElement;
+
+  // Клик внутри любого раскрытого меню — не закрываем его
+  const menu = target.closest('details');
+
+  if (menu) {
+    return;
+  }
+  closeDropdowns();
+});
+
+document.addEventListener('toggle', e => {
+  const current = e.target as HTMLDetailsElement;
+
+  if (!(current instanceof HTMLDetailsElement) || !current.open) return;
+
+  document.querySelectorAll<HTMLDetailsElement>('details[open]').forEach(menu => {
+    if (menu !== current) {
+      menu.removeAttribute('open');
+    }
+  });
+}, true);
+
+document.addEventListener('change', e => {
+  const target = e.target as HTMLElement;
+
+  // Изменение параметров внутри меню не закрывает его
+  if (target.closest('details')) {
+    return;
+  }
+});
 function save() {
   issues = validate(store.doc); redraw();
   const c = countBy(issues);
@@ -723,7 +1087,29 @@ bindHotkeys({
   k: cycleColorMode, '/': () => $<HTMLInputElement>('search').focus(), '.': () => $<HTMLInputElement>('search').focus(), g: () => $('legtoggle').click(), '3': () => $('b3d').click(), '?': () => $('help').click(),
   'ctrl+z': () => { if (!undoDraftPoint()) store.undo(); }, 'ctrl+shift+z': () => store.redo(), 'ctrl+y': () => store.redo(),
   'ctrl+s': save, 'ctrl+o': () => $('open').click(),
-  enter: () => { if (mode === 'area') finishArea(); else if (mode === 'draw') finishDraft(); else if (mode === 'repair') finishRepair(); },
+  enter: () => {
+    if (mode === 'area') finishArea();
+    else if (mode === 'building') finishBuilding();
+    else if (mode === 'draw') finishDraft();
+    else if (mode === 'repair') finishRepair();
+  },
   escape: () => { if (hl) pickLegend(null); draft = []; pendingMerge = null; markStart = null; repair = { mid: [] }; store.setSel([]); redraw(); },
+});
+
+// Эксклюзивное раскрытие только пунктов главного меню
+const mainMenus = document.querySelectorAll<HTMLDetailsElement>(
+  '#mainMenu > details'
+);
+
+mainMenus.forEach(menu => {
+  menu.addEventListener('toggle', () => {
+    if (!menu.open) return;
+
+    mainMenus.forEach(otherMenu => {
+      if (otherMenu !== menu) {
+        otherMenu.open = false;
+      }
+    });
+  });
 });
 setMode('select');

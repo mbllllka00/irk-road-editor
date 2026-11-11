@@ -267,6 +267,30 @@ export const TEMPLATES: Record<string, Tags> = {
   'Парковка: проезд между местами': { highway: 'service', service: 'parking_aisle', lanes: '', oneway: '', maxspeed: '10', 'lanes:forward': '', 'lanes:backward': '' },
   'Подземный пешеходный переход': { highway: 'footway', tunnel: 'yes', layer: '-1', lanes: '', oneway: '', maxspeed: '', 'lanes:forward': '', 'lanes:backward': '' },
   'Трамвайные пути': { railway: 'tram', highway: '', lanes: '', oneway: '', maxspeed: '40', 'lanes:forward': '', 'lanes:backward': '', service: '', junction: '' },
+  'Железная дорога': {
+    railway: 'rail',
+    highway: '',
+    service: '',
+    usage: 'main',
+    electrified: 'contact_line',
+    gauge: '1520',
+    bridge: '',
+    tunnel: '',
+    layer: ''
+  },
+
+  'Железная дорога (станционная)': {
+    railway: 'rail',
+    highway: '',
+    service: 'yard',
+    usage: 'branch'
+  },
+
+  'Железнодорожный подъездной путь': {
+    railway: 'spur',
+    highway: '',
+    service: 'spur'
+  },
   'Кольцо': { highway: 'residential', junction: 'roundabout', oneway: 'yes', lanes: '1', maxspeed: '30' },
 };
 export function applyTemplate(doc: Doc, wayIds: number[], name: string) {

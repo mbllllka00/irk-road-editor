@@ -3,6 +3,7 @@ import type { Doc } from '../core/types.ts';
 import { categorize, catalog, isDrawn, isUnderpass, MODE_TITLES } from '../core/roadStyle.ts';
 import type { ColorMode } from '../core/roadStyle.ts';
 import { signalStats } from './signals.ts';
+import { drawBusStopIcon } from './mapView.ts';
 
 export function renderLegend(el: HTMLElement, doc: Doc, mode: ColorMode, hl: string | null, onPick: (key: string | null) => void) {
   const counts = new Map<string, number>();
@@ -25,5 +26,74 @@ export function renderLegend(el: HTMLElement, doc: Doc, mode: ColorMode, hl: str
     ${ug ? `<div class="lg"><svg class="ico" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12" fill="#5b21b6" stroke="#fff" stroke-width="2"/><path d="M14 6v9M9.5 12l4.5 5 4.5-5M7 21h4v-2h4v2h6" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Подземный пешеходный переход (фиолетовая подсветка)</span><b>${ug}</b></div>` : ''}
     <div class="lg"><i class="dot" style="background:#555"></i><span>Перекрёсток без светофора</span><b>${st.plainJunctions}</b></div>`;
   el.innerHTML = `<div class="lgt">${MODE_TITLES[mode]}</div>${rows.join('') || '<div class="muted">нет данных</div>'}<div class="muted lgh">Клик по строке — подсветить только эту категорию${hl ? ' · <a href="#" data-k="">сбросить</a>' : ''}</div>${nodes}`;
+    const busStopsCount = [...doc.nodes.values()].filter(
+    n => n.tags.highway === 'bus_stop'
+  ).length;
+
+    const item = document.createElement('div');
+    item.style.display = 'flex';
+    item.style.alignItems = 'center';
+    item.style.gap = '7px';
+    item.style.marginTop = '5px';
+    item.style.width = '100%';
+    item.style.boxSizing = 'border-box';
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 80;
+    canvas.height = 80;
+
+    const ctx = canvas.getContext('2d')!;
+    ctx.scale(2, 2);
+    drawBusStopIcon(ctx);
+
+    const icon = document.createElement('img');
+    icon.src = canvas.toDataURL();
+    icon.style.width = '28px';
+    icon.style.height = '28px';
+
+    const label = document.createElement('span');
+    label.textContent = 'Автобусная остановка';
+
+    const count = document.createElement('span');
+    count.textContent = String(busStopsCount);
+    count.style.marginLeft = 'auto';
+    count.style.textAlign = 'right';
+
+    item.append(icon, label, count);
+    el.appendChild(item);
+  
   el.querySelectorAll<HTMLElement>('[data-k]').forEach(r => r.onclick = ev => { ev.preventDefault(); const k = r.dataset.k!; onPick(k === '' || k === hl ? null : k); });
+}
+export function countLegendObjects(doc: Doc) {
+  const ways = [...doc.ways.values()];
+  const nodes = [...doc.nodes.values()];
+
+  return {
+    roads: ways.filter(w => !!w.tags.highway && w.tags.highway !== 'bus_stop').length,
+
+    buildings: ways.filter(w => !!w.tags.building).length,
+
+    parking: ways.filter(w => w.tags.amenity === 'parking').length,
+
+    busStops: nodes.filter(n =>
+      n.tags.highway === 'bus_stop' ||
+      n.tags.public_transport === 'platform'
+    ).length,
+
+    trafficSignals: nodes.filter(n =>
+      n.tags.highway === 'traffic_signals'
+    ).length,
+
+    crossings: nodes.filter(n =>
+      n.tags.highway === 'crossing'
+    ).length,
+
+    giveWay: nodes.filter(n =>
+      n.tags.highway === 'give_way'
+    ).length,
+
+    stopSigns: nodes.filter(n =>
+      n.tags.highway === 'stop'
+    ).length,
+  };
 }

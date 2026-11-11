@@ -109,3 +109,79 @@ table.linkt td { padding: 3px 4px; border-bottom: 1px solid #eef0f2; vertical-al
 .cmp-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .cmp-actions button { font: inherit; font-size: 11px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; background: #fff; cursor: pointer; }
 .cmp-actions button:hover { border-color: var(--acc); color: var(--acc); }
+
+/* Выпадающие меню панели инструментов */
+
+#bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-menus {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tool-menu {
+  position: relative;
+}
+
+.tool-menu summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 13px;
+  border: 1px solid #3d4b58;
+  border-radius: 5px;
+  background: #2c3945;
+  color: white;
+  user-select: none;
+}
+
+.tool-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-menu summary::after {
+  content: " ▾";
+  color: #aebdca;
+}
+
+.tool-menu[open] summary {
+  background: #40546a;
+  border-color: #6b91b5;
+}
+
+.menu-content {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 5px);
+  left: 0;
+  min-width: 230px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  background: #26323e;
+  border: 1px solid #536575;
+  border-radius: 7px;
+  box-shadow: 0 5px 18px rgba(0,0,0,.3);
+}
+
+.menu-content .grp {
+  flex-wrap: wrap;
+}
+
+.menu-content .grp button {
+  cursor: pointer;
+}
+
+.search-group {
+  margin-left: auto;
+}
+
+#bar .menu-content label {
+  color: white;
+}

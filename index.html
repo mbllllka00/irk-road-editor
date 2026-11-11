@@ -7,55 +7,139 @@
   <title>Редактор графа УДС</title>
 </head>
 <body>
-  <header id="bar">
-    <strong class="brand">УДС-редактор</strong>
-    <div class="grp">
-      <button id="open" title="Ctrl+O">Открыть</button>
-      <button id="save" title="Ctrl+S">Сохранить .osm</button>
-      <button id="ring" title="Нарисовать кольцо: тянуть рамку как эллипс в Paint (Shift — круг)">+ Кольцо</button>
-      <button id="autofix" title="Объединить узлы с одинаковыми координатами">Автоисправить дубликаты</button>
-      <button id="stats" title="Статистика дорожной сети">Статистика</button>
-      <button id="compare" title="Сравнить текущую карту с исходным открытым OSM" disabled>Сравнить с исходным</button>
-      <input id="fname" size="10" title="Имя файла = имя команды (team1 → team1.osm)" value="team1" />
-    </div>
-    <div class="grp">
-      <button id="undo" title="Ctrl+Z">↶</button><button id="redo" title="Ctrl+Shift+Z">↷</button>
-    </div>
-    <div class="grp" title="Поиск улицы по названию: выделит все её рёбра (клавиша /)">
-      <input id="search" list="streetList" placeholder="Поиск улицы…" size="18" /><datalist id="streetList"></datalist><button id="searchBtn">Найти</button>
-    </div>
-    <div class="grp" id="modes">
-      <button data-mode="select" title="V">Выбор</button>
-      <button data-mode="node" title="N">Узел</button>
-      <button data-mode="draw" title="W">Ребро</button>
-      <button data-mode="split" title="X">Разрезать</button>
-      <button data-mode="merge" title="C">Склеить узлы</button>
-      <button data-mode="mark" title="T">Метка</button>
-      <button data-mode="repair" title="U">Участок</button>
-      <button data-mode="area" title="A">Парковка</button>
-    </div>
-    <div class="grp"><button id="multi" title="Мульти-выделение: каждый клик добавляет объект. Также: Shift/Ctrl+клик, Shift+рамка">☑ Мульти</button></div>
-    <div class="grp" id="ringbar" hidden>
-      <label title="Сегментов в кольце">сегм. <input id="ringN" type="number" min="8" max="48" value="24" style="width:52px" /></label>
-      <label>полос <input id="ringL" type="number" min="1" max="6" value="1" style="width:44px" /></label>
-      <label>км/ч <input id="ringV" type="number" min="5" max="130" value="30" style="width:52px" /></label>
-      <label title="Радиус для простого клика без перетаскивания">R, м <input id="ringR" type="number" min="5" max="100" value="18" style="width:52px" /></label>
-      <label title="Без Shift кольцо — эллипс, как в Paint"><input id="ringCircle" type="checkbox" /> всегда круг</label>
-    </div>
-    <div class="grp" id="markbar" hidden>
-      <select id="mtype" title="Что задаём по смыслу"></select>
-      <span id="mval"></span>
-      <label id="mwholel" title="Применить ко всей линии одним кликом"><input id="mwhole" type="checkbox" /> вся линия</label>
-    </div>
-    <div class="grp">
-      <select id="tpl" title="Шаблон для новых рёбер"></select>
-      <select id="cmode" title="Раскраска дорог (K)"><option value="class">Раскраска: класс</option><option value="lanes">Раскраска: полосы</option><option value="surface">Раскраска: покрытие</option><option value="speed">Раскраска: скорость</option></select>
-      <select id="base" title="Подложка"><option value="sat">Спутник</option><option value="osm">OSM</option><option value="custom">Свои тайлы</option><option value="none">Без подложки</option></select>
-      <input id="op" type="range" min="0" max="1" step="0.05" value="0.85" title="Прозрачность подложки" />
-      <input id="tiles" placeholder="https://…/{z}/{x}/{y}.png" size="22" />
-    </div>
-    <div class="grp"><button id="b3d" title="3">3D</button><button id="help" title="?">?</button></div>
-  </header>
+  
+<header id="bar">
+  <strong class="brand">УДС-редактор</strong>
+
+  <div class="toolbar-menus">
+
+    <!-- ФАЙЛ -->
+    <details class="tool-menu">
+      <summary>Файл</summary>
+      <div class="menu-content">
+        <div class="grp">
+          <button id="open" title="Ctrl+O">Открыть</button>
+          <button id="save" title="Ctrl+S">Сохранить .osm</button>
+          <input id="fname" size="10" value="team1" />
+        </div>
+      </div>
+    </details>
+
+    <!-- РЕДАКТИРОВАНИЕ -->
+    <details class="tool-menu">
+      <summary>Редактирование</summary>
+      <div class="menu-content">
+        <div class="grp" id="modes">
+          <button data-mode="select">Выбор</button>
+          <button data-mode="node">Узел</button>
+          <button data-mode="draw">Ребро</button>
+          <button data-mode="split">Разрезать</button>
+          <button data-mode="merge">Склеить узлы</button>
+          <button data-mode="mark">Метка</button>
+          <button data-mode="repair">Участок</button>
+          <button data-mode="area">Парковка</button>
+          <button data-mode="busstop">Остановка ОТ</button>
+          <button data-mode="building">Здание</button>
+          <button id="ring" data-mode="ring" title="Нарисовать кольцо: тянуть рамку по карте (Shift — круг), или клик">+ Кольцо</button>
+        </div>
+
+        <div class="grp">
+          <button id="multi">Мульти-выделение</button>
+        </div>
+        <div class="grp">
+          <button id="autofix">Автоисправить дубликаты</button>
+        </div>
+
+        <div class="grp" id="ringbar" hidden>
+          <label>Сегменты
+            <input id="ringN" type="number" min="8" max="48" value="24">
+          </label>
+          <label>Полос
+            <input id="ringL" type="number" min="1" max="6" value="1">
+          </label>
+          <label>км/ч
+            <input id="ringV" type="number" min="5" max="130" value="30">
+          </label>
+          <label>R, м
+            <input id="ringR" type="number" min="5" max="100" value="18">
+          </label>
+          <label>
+            <input id="ringCircle" type="checkbox">
+            Всегда круг
+          </label>
+        </div>
+
+        <div class="grp" id="markbar" hidden>
+          <select id="mtype"></select>
+          <span id="mval"></span>
+          <label id="mwholel">
+            <input id="mwhole" type="checkbox">
+            Вся линия
+          </label>
+        </div>
+      </div>
+    </details>
+
+    <!-- ОБЪЕКТЫ -->
+    <details class="tool-menu">
+      <summary>Объекты</summary>
+      <div class="menu-content">
+        <div class="grp">
+          <label>Тип создаваемого ребра:</label>
+          <select id="tpl"></select>
+        </div>
+      </div>
+    </details>
+
+    <!-- ВИД -->
+    <details class="tool-menu">
+      <summary>Вид</summary>
+      <div class="menu-content">
+        <div class="grp">
+          <select id="cmode">
+            <option value="class">Раскраска: класс</option>
+            <option value="lanes">Раскраска: полосы</option>
+            <option value="surface">Раскраска: покрытие</option>
+            <option value="speed">Раскраска: скорость</option>
+          </select>
+
+          <select id="base">
+            <option value="sat">Спутник</option>
+            <option value="osm">OSM</option>
+            <option value="custom">Свои тайлы</option>
+            <option value="none">Без подложки</option>
+          </select>
+
+          <input id="op" type="range" min="0" max="1" step="0.05" value="0.85">
+          <input id="tiles" placeholder="URL тайлов" size="18">
+          <button id="b3d">3D</button>
+        </div>
+      </div>
+    </details>
+
+    <!-- АНАЛИЗ -->
+    <details class="tool-menu">
+      <summary>Анализ</summary>
+      <div class="menu-content">
+        <div class="grp">
+          <button id="stats">Статистика</button>
+          <button id="compare" disabled>Сравнить с исходным</button>
+          <button id="help">Справка</button>
+        </div>
+      </div>
+    </details>
+
+  </div>
+  <div class="grp">
+    <button id="undo" title="Ctrl+Z">↶ Отменить</button>
+    <button id="redo" title="Ctrl+Shift+Z">↷ Повторить</button>
+  </div>
+  <div class="grp search-group">
+    <input id="search" list="streetList" placeholder="Поиск улицы…" size="18">
+    <datalist id="streetList"></datalist>
+    <button id="searchBtn">Найти</button>
+  </div>
+</header>
   <main>
     <div id="mapwrap"><div id="map"></div><button id="legtoggle" title="G">✕ Скрыть легенду</button><div id="legend"></div>
       <div id="comparePanel" hidden>
